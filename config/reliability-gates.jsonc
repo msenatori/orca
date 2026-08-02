@@ -2114,31 +2114,46 @@
       "maturity": "experimental",
       "protection": "partial",
       "owner": "agent-session",
-      "layer": "renderer-state",
+      "layer": "cross-boundary",
       "surfaces": [
         "agent launch",
         "workspace activation",
         "sleep and hibernate restore",
         "provider session dedupe",
-        "sidebar and mobile identity"
+        "sidebar and mobile identity",
+        "runtime-owned background PTY mount and remount"
       ],
       "platforms": ["macos", "linux", "windows"],
       "providers": ["local", "daemon", "ssh", "wsl", "remote-runtime"],
       "coveredPlatforms": ["macos"],
-      "coveredProviders": [],
-      "coverageNotes": "Local macOS evidence over the ownership/dedupe suite on main@1282f5c2d. Queued/pending resume-claim indexing, same-session and wrong-session hook proofs, and Electron repeat-activation coverage arrive with the pending stack (#7008).",
+      "coveredProviders": ["local", "daemon", "remote-runtime"],
+      "coverageNotes": "Renderer ownership/dedupe contracts cover provider-session claims. Local and daemon attach-only contracts prove an existing stable-pane owner is adopted without provider creation, while remote-runtime transport contracts preserve adopted ownership through cancellation. The Electron oracle covers a local macOS runtime and daemon with real agent, Setup, and unrelated-canary processes; SSH, WSL, paired-server, Linux, and Windows remain contract-only or unrun.",
       "motivatingLinks": [
         "https://github.com/stablyai/orca/pull/6800",
         "https://github.com/stablyai/orca/pull/5240",
         "https://github.com/stablyai/orca/pull/6411",
-        "https://github.com/stablyai/orca/pull/6833"
+        "https://github.com/stablyai/orca/pull/6833",
+        "https://github.com/stablyai/orca/pull/11789",
+        "https://github.com/stablyai/orca/pull/11819"
       ],
-      "invariant": "Workspace activation, launch, restore, sleep, hibernate, dedupe, clearing, and reconnect code must not replay or resume a provider session id already owned, queued, pending, or live in that workspace.",
-      "oracle": "The current renderer-state slice asserts provider-session claim keys are owned by preserved active tabs, inactive split leaves, visible non-focused split groups, live records, quit records, worktree-sleep records, queued startup payloads, time-bounded resume bridge claims, and same-session live hook evidence; duplicates clear without launching a second resume command. The provider list is the risk scope, not proof that every provider has a live integration gate.",
+      "invariant": "Workspace activation, launch, restore, sleep, hibernate, dedupe, clearing, mount, remount, and reconnect code must not replay or resume a provider session id already owned, queued, pending, live, or durably bound to a host PTY in that workspace. A renderer with missing projection state must adopt the exact runtime-owned PTY for the original tab and leaf rather than create a replacement.",
+      "oracle": "Renderer-state tests assert provider-session ownership across preserved and queued panes. Main/provider contracts assert atomic attach-only adoption, stable host/worktree/tab/leaf identity, no fresh spawn on adoption, and safe paired-runtime cancellation. The Electron oracle creates inactive runtime-owned Codex and Setup PTYs plus an unrelated canary, seeds an exact resumable provider session, removes only the target renderer projections, and activates the workspace. It requires byte-stable handle, PTY, incarnation, tab, leaf, process PID, renderer graph, persisted binding, runtime id, graph epoch, and daemon PID across first mount and reload; PID-specific DOM keyboard I/O must remain live with one launch, zero resume argv, zero signals, zero interruption text, and no canary mutation.",
       "commands": [
-        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/resume-sleeping-agent-session.test.ts"
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/resume-sleeping-agent-session.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/lib/resume-sleeping-agent-session.test.ts src/main/providers/local-pty-provider.test.ts src/main/daemon/terminal-host.test.ts src/main/daemon/daemon-pty-adapter.test.ts src/main/ipc/pty.test.ts src/main/runtime/orca-runtime.test.ts src/renderer/src/components/terminal-pane/pty-connection.test.ts src/renderer/src/components/terminal-pane/pty-transport.test.ts",
+        "pnpm exec electron-vite build --mode e2e && SKIP_BUILD=1 pnpm exec playwright test tests/e2e/live-background-terminal-mount-authority.spec.ts --config tests/playwright.config.ts --project electron-headless --workers=1"
       ],
-      "testFiles": ["src/renderer/src/lib/resume-sleeping-agent-session.test.ts"],
+      "testFiles": [
+        "src/renderer/src/lib/resume-sleeping-agent-session.test.ts",
+        "src/main/providers/local-pty-provider.test.ts",
+        "src/main/daemon/terminal-host.test.ts",
+        "src/main/daemon/daemon-pty-adapter.test.ts",
+        "src/main/ipc/pty.test.ts",
+        "src/main/runtime/orca-runtime.test.ts",
+        "src/renderer/src/components/terminal-pane/pty-connection.test.ts",
+        "src/renderer/src/components/terminal-pane/pty-transport.test.ts",
+        "tests/e2e/live-background-terminal-mount-authority.spec.ts"
+      ],
       "assertionRefs": [
         {
           "file": "src/renderer/src/lib/resume-sleeping-agent-session.test.ts",
@@ -2147,6 +2162,30 @@
             "one launch per provider session: skipped duplicates are cleared instead of relaunched",
             "active stable-pane records owned by preserved or visible panes are not resumed again",
             "hibernated stable panes with cleared live PTY bindings are skipped"
+          ]
+        },
+        {
+          "file": "src/main/ipc/pty.test.ts",
+          "assertions": [
+            "a completed runtime-owned stable pane is adopted with its original PTY and incarnation while renderer resume intent is stripped",
+            "an exact persisted owner is attach-only adopted when the runtime projection is missing",
+            "runtime and persisted stable-pane owner conflicts fail closed before provider creation"
+          ]
+        },
+        {
+          "file": "src/renderer/src/components/terminal-pane/pty-transport.test.ts",
+          "assertions": [
+            "paired-runtime stable-pane adoption reports reattach without fresh-spawn ownership",
+            "cancellation after a paired-runtime adoption cannot close the original owner"
+          ]
+        },
+        {
+          "file": "tests/e2e/live-background-terminal-mount-authority.spec.ts",
+          "assertions": [
+            "first mount and renderer reload preserve exact agent and Setup handle, PTY, incarnation, tab, leaf, and PID identity",
+            "PID-specific keyboard input and output remain user-visible in both mounted panes",
+            "runtime inventory, renderer graph, persisted session, runtime epoch, and daemon PID converge without replacement or resume",
+            "the unrelated canary remains writable and receives no signal across target projection repair"
           ]
         }
       ],
@@ -2162,30 +2201,32 @@
         }
       ],
       "runtimeBudget": {
-        "p95Seconds": 15,
-        "scope": "local renderer state test"
+        "p95Seconds": 180,
+        "scope": "focused renderer/main/provider contracts plus one isolated Electron mount-and-reload journey"
       },
       "flakeHistory": {
         "status": "unknown",
-        "evidence": "Registered after targeted tests were found; needs soak history before blocking promotion."
+        "evidence": "The renderer gate has prior local evidence; the stable-pane Electron oracle is new and needs CI soak before blocking promotion."
       },
       "redGreenEvidence": {
         "status": "partial",
-        "evidence": "Tests encode provider-session dedupe and ownership claims across active/inactive/visible split records, queued pendingStartupByTabId resume payloads, time-bounded runtime automaticAgentResumeClaimsByTabId bridge claims, live same-session hook evidence, wrong-session hook rejection, and a bounded queued-claim index over many records/tabs. Needs saved red/green artifact for the class-level replay invariant."
+        "evidence": "Renderer tests encode provider-session dedupe across active, inactive, queued, and live claims. The cross-boundary Electron oracle is constructed for byte-identical latest-main, candidate, and candidate-revert runs; record those three terminal results before promoting this gate."
       },
       "performanceBudget": {
         "required": true,
-        "evidence": "Current state tests are cheap and assert queued pending-startup provider-session ids are indexed once per activation. PRs adding new ownership scans must show bounded work over records and no hidden-pane wake loop before blocking promotion."
+        "evidence": "Renderer state tests assert bounded provider-session indexing. Stable-pane adoption is a targeted owner lookup and attach-only call; focused contracts require no provider listing scan, fresh spawn callback, or repeated resume probe. The Electron oracle checks exact launch counts but is not a throughput benchmark."
       },
       "promotionCriteria": [
         "Run in soak for at least 100 consecutive passes or 14 days across required CI platforms.",
         "Add bounded-work assertions for delayed hook/status ownership scans if those paths grow.",
-        "Attach red/green evidence that display/replay evidence alone cannot claim ownership."
+        "Attach red/green evidence that display/replay evidence alone cannot claim ownership.",
+        "Record byte-identical latest-main, candidate, and candidate-revert Electron results."
       ],
       "knownGaps": [
-        "Providers listed on this gate are affected identity surfaces; the current executable command is renderer-state coverage, not live local/daemon/SSH/WSL/remote-runtime coverage.",
-        "Current command models live same-session and wrong-session hook evidence, but does not run the real hook timing through Electron.",
-        "Current command does not run a real workspace activation loop repeatedly through Electron."
+        "Providers listed on this gate are affected identity surfaces; live integration is limited to local macOS while daemon and remote-runtime adoption also have focused contracts.",
+        "The Electron oracle seeds the production hook-store contract instead of running an authenticated Codex hook end to end.",
+        "The live Electron topology is local macOS only; folder workspaces, SSH, WSL, paired headed/headless servers, Linux, and Windows are not exercised by that journey.",
+        "The oracle covers first activation and one renderer reload, not repeated soak activation or an installed-app update."
       ],
       "demotionRule": "Demote or quarantine if failures are non-actionable or if a duplicate resume escape occurs outside the modeled matrix."
     },
