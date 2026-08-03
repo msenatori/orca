@@ -12,11 +12,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { installWindowVisibilityInterval } from '@/lib/window-visibility-interval'
 import { AgentKanbanCard } from './AgentKanbanCard'
 import { AgentDashboardToolbar } from './AgentDashboardToolbar'
-import {
-  AgentTerminalDialog,
-  AgentTerminalPanel,
-  type AgentRevealArgs
-} from './AgentTerminalDialog'
+import { AgentTerminalDialog, type AgentRevealArgs } from './AgentTerminalDialog'
 import {
   EMPTY_DASHBOARD_FILTERS,
   filterDashboardCards,
@@ -26,6 +22,7 @@ import './agent-board-transitions.css'
 import { translate } from '@/i18n/i18n'
 import { Button } from '@/components/ui/button'
 import { AgentMap } from './AgentMap'
+import { AgentMapInspector } from './AgentMapInspector'
 import { useFleetResultDisposition } from './use-fleet-result-disposition'
 
 export type AgentDashboardView = 'map' | 'board'
@@ -354,19 +351,16 @@ export function AgentKanbanBoard({
               onOpenTerminal={handleOpenAdjacentTerminal}
             />
             {dialogCard ? (
-              <AgentTerminalPanel
+              <AgentMapInspector
+                key={`${dialogCard.paneKey}:${dialogCard.viewMode ?? 'terminal'}`}
                 card={dialogCard}
+                side={terminalPanelSide}
                 onOpenChange={handleDialogOpenChange}
                 onReveal={onRevealAgent}
                 reviewed={reviewedPaneKeys.has(dialogCard.paneKey)}
                 pinned={pinnedPaneKeys.has(dialogCard.paneKey)}
                 onMarkReviewed={(card) => markReviewed([card])}
                 onTogglePinned={togglePinned}
-                className={cn(
-                  terminalPanelSide === 'right' ? 'ml-0' : 'mr-0',
-                  'animate-in fade-in-0 duration-200 motion-reduce:animate-none',
-                  terminalPanelSide === 'right' ? 'slide-in-from-right-2' : 'slide-in-from-left-2'
-                )}
               />
             ) : null}
           </div>

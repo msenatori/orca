@@ -43,6 +43,7 @@ const SNAPSHOT = {
       worktreeName: 'Dashboard',
       hostKind: 'ssh',
       workspaceKind: 'worktree',
+      viewMode: 'chat',
       workspaceStatusId: 'in-review',
       workspaceStatusLabel: 'In review',
       workspaceStatusColor: 'emerald',
@@ -115,6 +116,12 @@ describe('dashboard payload validation', () => {
       isDashboardSnapshot({
         ...SNAPSHOT,
         cards: [{ ...SNAPSHOT.cards[0], workspaceKind: 'repository' }]
+      })
+    ).toBe(false)
+    expect(
+      isDashboardSnapshot({
+        ...SNAPSHOT,
+        cards: [{ ...SNAPSHOT.cards[0], viewMode: 'voice' }]
       })
     ).toBe(false)
     expect(

@@ -7,7 +7,7 @@ import {
 } from '../../../../shared/agent-status-types'
 import { DASHBOARD_MAX_LABEL_LENGTH } from '../../../../shared/dashboard-snapshot'
 import { makePaneKey } from '../../../../shared/stable-pane-id'
-import type { TerminalTab, Worktree } from '../../../../shared/types'
+import type { Tab, TerminalTab, Worktree } from '../../../../shared/types'
 import { selectRuntimeAgentOrchestrationBatch } from '../sidebar/worktree-agent-orchestration-batch'
 
 const NOW = 1_000_000_000
@@ -45,6 +45,22 @@ function tab(id = TAB_ID, worktreeId = 'w1'): TerminalTab {
     color: null,
     sortOrder: 0,
     createdAt: NOW
+  }
+}
+
+function unifiedTerminalTab(viewMode: Tab['viewMode']): Tab {
+  return {
+    id: 'unified-tab-1',
+    entityId: TAB_ID,
+    groupId: 'group-1',
+    worktreeId: 'w1',
+    contentType: 'terminal',
+    label: 'agent',
+    customLabel: null,
+    color: null,
+    sortOrder: 0,
+    createdAt: NOW,
+    viewMode
   }
 }
 
@@ -307,6 +323,28 @@ describe('buildDashboardSnapshot', () => {
     )
     expect(none.cards[0].sessionId).toBeUndefined()
     expect(none.cards[0].transcriptPath).toBeUndefined()
+  })
+
+  it('publishes the effective native-chat view mode for the agent tab', () => {
+    const enabled = buildDashboardSnapshot(
+      baseState({
+        agentStatusByPaneKey: { [PANE_KEY]: entry({}) },
+        unifiedTabsByWorktree: { w1: [unifiedTerminalTab('chat')] },
+        settings: { experimentalNativeChat: true }
+      } as unknown as Partial<DashboardSnapshotState>),
+      NOW
+    )
+    expect(enabled.cards[0].viewMode).toBe('chat')
+
+    const disabled = buildDashboardSnapshot(
+      baseState({
+        agentStatusByPaneKey: { [PANE_KEY]: entry({}) },
+        unifiedTabsByWorktree: { w1: [unifiedTerminalTab('chat')] },
+        settings: { experimentalNativeChat: false }
+      } as unknown as Partial<DashboardSnapshotState>),
+      NOW
+    )
+    expect(disabled.cards[0].viewMode).toBe('terminal')
   })
 
   it('marks SSH transcript paths as remote from the dashboard renderer', () => {

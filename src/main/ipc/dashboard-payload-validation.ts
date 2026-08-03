@@ -30,6 +30,7 @@ const DASHBOARD_BUCKETS = new Set(['attention', 'working', 'done', 'idle'])
 const DASHBOARD_DOT_STATES = new Set(['working', 'blocked', 'waiting', 'done', 'idle'])
 const DASHBOARD_HOST_KINDS = new Set(['local', 'ssh', 'wsl', 'remote'])
 const DASHBOARD_WORKSPACE_KINDS = new Set(['worktree', 'folder'])
+const DASHBOARD_VIEW_MODES = new Set(['terminal', 'chat'])
 const DASHBOARD_REVIEW_STATES = new Set(['open', 'closed', 'merged', 'draft'])
 const DASHBOARD_HOST_PLATFORMS = new Set([
   'aix',
@@ -274,6 +275,8 @@ function isDashboardCard(value: unknown): boolean {
     (card.workspaceKind === undefined ||
       (typeof card.workspaceKind === 'string' &&
         DASHBOARD_WORKSPACE_KINDS.has(card.workspaceKind))) &&
+    (card.viewMode === undefined ||
+      (typeof card.viewMode === 'string' && DASHBOARD_VIEW_MODES.has(card.viewMode))) &&
     isOptionalBoundedString(card.workspaceStatusId, MAX_ID_LENGTH) &&
     isOptionalBoundedString(card.workspaceStatusLabel, MAX_LABEL_LENGTH) &&
     isOptionalBoundedString(card.workspaceStatusColor, MAX_ID_LENGTH) &&

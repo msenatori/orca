@@ -110,6 +110,24 @@ vi.mock('./AgentTerminalDialog', () => ({
     </div>
   )
 }))
+vi.mock('./AgentChatPanel', () => ({
+  AgentChatPanel: ({
+    card,
+    onClose,
+    onOpenTerminal,
+    className
+  }: {
+    card: DashboardCard
+    onClose: () => void
+    onOpenTerminal?: () => void
+    className?: string
+  }) => (
+    <div data-testid="chat-panel" data-pane-key={card.paneKey} className={className}>
+      <button data-testid="chat-panel-close" onClick={onClose} />
+      <button data-testid="chat-panel-terminal" onClick={onOpenTerminal} />
+    </div>
+  )
+}))
 
 function card(overrides: Partial<DashboardCard>): DashboardCard {
   return {
@@ -189,6 +207,49 @@ describe('AgentKanbanBoard', () => {
     expect(screen.getByRole('button', { name: /Map agent/ })).toHaveClass('is-selected')
     expect(screen.queryByText('Focus view')).not.toBeInTheDocument()
     expect(screen.queryByTestId('terminal-dialog')).not.toBeInTheDocument()
+  })
+
+  it('opens native chat on the map-selected side and can switch to terminal preview', () => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1000)
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(800, 0, 100, 100)
+    )
+    const agent = card({
+      paneKey: 'native-map-agent',
+      conversationName: 'Native map agent',
+      viewMode: 'chat'
+    })
+    render(<AgentKanbanBoard snapshot={{ generatedAt: 1, cards: [agent] }} initialView="map" />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Native map agent/ }))
+
+    const chatPanel = screen.getByTestId('chat-panel')
+    expect(chatPanel).toHaveClass('mr-0', 'slide-in-from-left-2')
+    expect(chatPanel.parentElement).toHaveClass('flex-row-reverse')
+    expect(screen.queryByTestId('terminal-panel')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('chat-panel-terminal'))
+    expect(screen.getByTestId('terminal-panel')).toHaveAttribute('data-pty-id', 'p1')
+    expect(screen.queryByTestId('chat-panel')).not.toBeInTheDocument()
+  })
+
+  it('switches an open map inspector when the live tab enters native chat', () => {
+    const terminalAgent = card({ paneKey: 'switching-agent', conversationName: 'Switching agent' })
+    const { rerender } = render(
+      <AgentKanbanBoard snapshot={{ generatedAt: 1, cards: [terminalAgent] }} initialView="map" />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Switching agent/ }))
+    expect(screen.getByTestId('terminal-panel')).toBeInTheDocument()
+
+    rerender(
+      <AgentKanbanBoard
+        snapshot={{ generatedAt: 2, cards: [{ ...terminalAgent, viewMode: 'chat' }] }}
+        initialView="map"
+      />
+    )
+
+    expect(screen.getByTestId('chat-panel')).toHaveAttribute('data-pane-key', 'switching-agent')
+    expect(screen.queryByTestId('terminal-panel')).not.toBeInTheDocument()
   })
 
   it('focuses search with Ctrl+K without taking focus from response fields', () => {

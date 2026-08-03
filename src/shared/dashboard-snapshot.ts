@@ -40,6 +40,7 @@ export type DashboardCardSubagent = {
 
 export type DashboardCardHostKind = 'local' | 'ssh' | 'wsl' | 'remote'
 export type DashboardCardWorkspaceKind = 'worktree' | 'folder'
+export type DashboardCardViewMode = 'terminal' | 'chat'
 
 export type DashboardCard = {
   /** Stable identity for React keys. */
@@ -69,6 +70,8 @@ export type DashboardCard = {
   hostKind?: DashboardCardHostKind
   /** Folder workspaces share the ring hierarchy without pretending to be git worktrees. */
   workspaceKind?: DashboardCardWorkspaceKind
+  /** Effective renderer mode for this agent's terminal tab. */
+  viewMode?: DashboardCardViewMode
   workspaceStatusId?: string
   workspaceStatusLabel?: string
   workspaceStatusColor?: string

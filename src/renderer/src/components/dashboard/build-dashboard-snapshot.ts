@@ -50,6 +50,7 @@ import {
   dashboardCardTask,
   nonEmptyDashboardCardText
 } from './dashboard-card-display-fields'
+import { dashboardNativeChatTabIds } from './dashboard-native-chat-tab-ids'
 
 /** Store slices needed to build a snapshot without constructing the full AppState in tests. */
 export type DashboardSnapshotState = Pick<
@@ -68,7 +69,8 @@ export type DashboardSnapshotState = Pick<
   | 'settings'
 > &
   DashboardCardContextState &
-  Partial<DashboardCardTerminalInputState>
+  Partial<DashboardCardTerminalInputState> &
+  Partial<Pick<AppState, 'unifiedTabsByWorktree'>>
 
 function bucketForState(state: DashboardAgentRow['state']): DashboardBucket {
   switch (state) {
@@ -147,6 +149,7 @@ export function buildDashboardSnapshot(
   for (const workspace of activeWorktrees) {
     const { repo, worktree } = workspace
     const worktreeId = worktree.id
+    const nativeChatTabIds = dashboardNativeChatTabIds(state, worktreeId)
     const liveEntries = selectLiveAgentStatusEntriesForWorktree(state, worktreeId)
     const migrationUnsupported = selectMigrationUnsupportedEntriesForWorktree(state, worktreeId)
     const entries =
@@ -269,6 +272,7 @@ export function buildDashboardSnapshot(
           clientHost.platform
         ),
         workspaceKind: workspace.workspaceKind,
+        viewMode: nativeChatTabIds.has(tabId) ? 'chat' : 'terminal',
         workspaceStatusId: context?.workspaceStatus.id,
         workspaceStatusLabel: context?.workspaceStatus.label,
         workspaceStatusColor: context?.workspaceStatus.color,

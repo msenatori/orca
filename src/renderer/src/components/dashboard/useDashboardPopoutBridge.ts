@@ -44,6 +44,7 @@ export function dashboardSnapshotInputsChanged(
     state.repos !== previousState.repos ||
     state.worktreesByRepo !== previousState.worktreesByRepo ||
     state.tabsByWorktree !== previousState.tabsByWorktree ||
+    state.unifiedTabsByWorktree !== previousState.unifiedTabsByWorktree ||
     state.agentStatusByPaneKey !== previousState.agentStatusByPaneKey ||
     state.retainedAgentsByPaneKey !== previousState.retainedAgentsByPaneKey ||
     state.migrationUnsupportedByPtyId !== previousState.migrationUnsupportedByPtyId ||
