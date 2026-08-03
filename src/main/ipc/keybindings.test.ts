@@ -68,10 +68,10 @@ describe('registerKeybindingHandlers', () => {
     showItemInFolderMock.mockReset()
   })
 
-  it('authorizes the keybindings file for in-app editing when ensuring it exists', () => {
+  it('authorizes the keybindings file for in-app editing when ensuring it exists', async () => {
     registerKeybindingHandlers({ ensureFile: vi.fn(() => snapshot) } as never)
 
-    expect(getHandler('keybindings:ensureFile')()).toBe(snapshot)
+    await expect(getHandler('keybindings:ensureFile')()).resolves.toBe(snapshot)
     expect(authorizeExternalPathMock).toHaveBeenCalledWith(snapshot.path)
   })
 

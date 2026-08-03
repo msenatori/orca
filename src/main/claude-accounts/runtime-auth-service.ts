@@ -16,6 +16,7 @@ import { parseWslUncPath } from '../../shared/wsl-paths'
 import { resolveLocalAccountRuntimeTarget } from '../../shared/local-account-runtime'
 import { getDefaultWslDistro, getWslHome, toWindowsWslPath } from '../wsl'
 import { buildEncodedWslBashCommand } from '../wsl-bash-command'
+import { resolveClaudeCommand } from '../codex-cli/command'
 import { hasLiveClaudePtys } from './live-pty-gate'
 import { isOauthTokenExpiring, refreshClaudeOauthCredentials } from './oauth-refresh'
 import { ClaudeRuntimePathResolver } from './runtime-paths'
@@ -37,6 +38,10 @@ import {
 } from './runtime-selection'
 
 export type ClaudeRuntimeAuthPreparation = {
+  command?: string
+  hiddenPtyCwd?: string
+  oauthCredentials?: ClaudeOAuthCredentialSnapshot
+  legacyOAuthCredentials?: ClaudeOAuthCredentialSnapshot
   configDir: string
   runtime?: 'host' | 'wsl'
   wslDistro?: string | null
@@ -45,6 +50,13 @@ export type ClaudeRuntimeAuthPreparation = {
   stripAuthEnv: boolean
   managedRefreshDeferredByLivePty?: boolean
   provenance: string
+}
+
+export type ClaudeOAuthCredentialSnapshot = {
+  token: string | null
+  hasRefreshableCredentials: boolean
+  source: 'scoped-keychain' | 'legacy-keychain' | 'credentials-file' | 'none'
+  keychainUnavailable?: boolean
 }
 
 type ClaudeSystemDefaultSnapshot = {
@@ -615,6 +627,7 @@ export class ClaudeRuntimeAuthService {
       activeAccount.wslLinuxAuthPath
     ) {
       return {
+        command: 'claude',
         configDir: activeAccount.managedAuthPath,
         runtime: 'wsl',
         wslDistro: activeAccount.wslDistro ?? null,
@@ -633,6 +646,7 @@ export class ClaudeRuntimeAuthService {
         const windowsConfigDir = join(wslHome, '.claude')
         const linuxConfigDir = `${wslHomeInfo.linuxPath.replace(/\/$/, '')}/.claude`
         return {
+          command: 'claude',
           configDir: windowsConfigDir,
           runtime: 'wsl',
           wslDistro: distro,
@@ -643,6 +657,7 @@ export class ClaudeRuntimeAuthService {
         }
       }
       return {
+        command: 'claude',
         configDir: paths.configDir,
         runtime: 'wsl',
         wslDistro: normalizeClaudeAccountSelectionTarget(normalizedTarget).wslDistro,
@@ -653,6 +668,7 @@ export class ClaudeRuntimeAuthService {
       }
     }
     return {
+      command: resolveClaudeCommand(),
       configDir: paths.configDir,
       runtime: 'host',
       wslDistro: null,

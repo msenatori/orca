@@ -17,7 +17,6 @@ import { openClaudeHookService } from '../openclaude/hook-service'
 
 export type ManagedAgentHookInstaller = readonly [HookInstallAgent, () => AgentHookInstallStatus]
 export type ManagedAgentHookRemover = readonly [HookInstallAgent, () => AgentHookInstallStatus]
-export type ManagedAgentHookStatusReader = readonly [HookInstallAgent, () => AgentHookInstallStatus]
 
 export const MANAGED_AGENT_HOOK_INSTALLERS: readonly ManagedAgentHookInstaller[] = [
   ['claude', () => claudeHookService.install()],
@@ -51,21 +50,4 @@ export const MANAGED_AGENT_HOOK_REMOVERS: readonly ManagedAgentHookRemover[] = [
   ['hermes', () => hermesHookService.remove()],
   ['devin', () => devinHookService.remove()],
   ['kimi', () => kimiHookService.remove()]
-]
-
-export const MANAGED_AGENT_HOOK_STATUS_READERS: readonly ManagedAgentHookStatusReader[] = [
-  ['claude', () => claudeHookService.getStatus()],
-  ['openclaude', () => openClaudeHookService.getStatus()],
-  ['codex', () => codexHookService.getStatus()],
-  ['gemini', () => geminiHookService.getStatus()],
-  ['antigravity', () => antigravityHookService.getStatus()],
-  ['amp', () => ampHookService.getStatus()],
-  ['cursor', () => cursorHookService.getStatus()],
-  ['droid', () => droidHookService.getStatus()],
-  ['grok', () => grokHookService.getStatus()],
-  ['command-code', () => commandCodeHookService.getStatus()],
-  ['copilot', () => copilotHookService.getStatus()],
-  ['hermes', () => hermesHookService.getStatus()],
-  ['devin', () => devinHookService.getStatus()],
-  ['kimi', () => kimiHookService.getStatus()]
 ]

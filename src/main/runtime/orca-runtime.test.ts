@@ -43,6 +43,7 @@ import {
   WORKTREE_TEARDOWN_RPC_MARGIN_MS
 } from './worktree-teardown'
 import { clearSubmodulePathsCacheForTests, listSubmodulePaths } from '../git/status'
+import { orcaYamlSnapshots } from '../git/orca-yaml-snapshot-store'
 import {
   createSetupRunnerScript,
   getEffectiveHooks,
@@ -42337,10 +42338,10 @@ describe('OrcaRuntimeService', () => {
 
   it('passes project shared links through the runtime removal preflight and cleanup', async () => {
     const runtime = createWorktreeRemovalRuntime()
-    vi.mocked(loadHooks).mockReturnValue({
-      scripts: {},
-      worktree: { sharedDirectories: ['node_modules'] }
-    })
+    orcaYamlSnapshots.publishContent(
+      TEST_REPO_PATH,
+      'worktree:\n  sharedDirectories:\n    - node_modules\n'
+    )
     findExistingWorktreeSymlinkPathsMock.mockResolvedValue(['node_modules'])
     vi.mocked(removeWorktree).mockResolvedValue({})
 

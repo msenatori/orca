@@ -59,7 +59,8 @@ const {
   gitExecFileAsyncMock,
   getSshGitProviderMock,
   getSshFilesystemProviderMock,
-  getActiveMultiplexerMock
+  getActiveMultiplexerMock,
+  readOrcaYamlSnapshotMock
 } = vi.hoisted(() => ({
   handleMock: vi.fn(),
   removeHandlerMock: vi.fn(),
@@ -110,7 +111,8 @@ const {
   gitExecFileAsyncMock: vi.fn(),
   getSshGitProviderMock: vi.fn(),
   getSshFilesystemProviderMock: vi.fn(),
-  getActiveMultiplexerMock: vi.fn()
+  getActiveMultiplexerMock: vi.fn(),
+  readOrcaYamlSnapshotMock: vi.fn()
 }))
 
 vi.mock('electron', () => ({
@@ -205,6 +207,13 @@ vi.mock('../hooks', () => ({
   runHook: runHookMock,
   hasHooksFile: hasHooksFileMock,
   shouldRunSetupForCreate: shouldRunSetupForCreateMock
+}))
+
+vi.mock('../git/orca-yaml-snapshot-store', () => ({
+  orcaYamlSnapshots: {
+    read: readOrcaYamlSnapshotMock,
+    resetForTests: vi.fn()
+  }
 }))
 
 vi.mock('./worktree-logic', async (importOriginal) => {
@@ -383,6 +392,7 @@ describe('registerWorktreeHandlers', () => {
       getSshGitProviderMock,
       getSshFilesystemProviderMock,
       getActiveMultiplexerMock,
+      readOrcaYamlSnapshotMock,
       mainWindow.webContents.send,
       store.getRepos,
       store.getRepo,
@@ -420,6 +430,13 @@ describe('registerWorktreeHandlers', () => {
     findExistingWorktreeSymlinkPathsMock.mockResolvedValue([])
     getLocalPtyProviderMock.mockReturnValue({} as never)
     getSshPtyProviderMock.mockReturnValue({} as never)
+    readOrcaYamlSnapshotMock.mockReturnValue({
+      value: null,
+      stale: true,
+      age: null,
+      availability: 'unavailable',
+      lastError: null
+    })
 
     for (const key of Object.keys(handlers)) {
       delete handlers[key]
@@ -8401,8 +8418,17 @@ describe('registerWorktreeHandlers', () => {
 
   it('passes project shared links through the IPC removal preflight and cleanup', async () => {
     mockKnownFeatureWorktree()
-    loadHooksMock.mockReturnValue({
-      worktree: { sharedDirectories: ['node_modules'] }
+    readOrcaYamlSnapshotMock.mockReturnValue({
+      value: {
+        contentState: 'valid',
+        hooks: { worktree: { sharedDirectories: ['node_modules'] } },
+        mayNeedUpdate: false,
+        sharedDirectories: ['node_modules']
+      },
+      stale: false,
+      age: 0,
+      availability: 'ready',
+      lastError: null
     })
     findExistingWorktreeSymlinkPathsMock.mockResolvedValue(['node_modules'])
     removeWorktreeMock.mockResolvedValue({})
@@ -9055,6 +9081,36 @@ describe('registerWorktreeHandlers', () => {
 
     expect(removeWorktreeMock).not.toHaveBeenCalled()
     expect(getSshGitProviderMock).not.toHaveBeenCalled()
+  })
+
+  it('serves local hook inspection from the memory snapshot', async () => {
+    readOrcaYamlSnapshotMock.mockReturnValue({
+      value: {
+        contentState: 'valid',
+        hooks: { scripts: { setup: 'pnpm install' } },
+        mayNeedUpdate: false,
+        sharedDirectories: ['node_modules']
+      },
+      stale: false,
+      age: 0,
+      availability: 'ready',
+      lastError: null
+    })
+
+    await expect(handlers['hooks:check'](null, { repoId: 'repo-1' })).resolves.toEqual({
+      status: 'ok',
+      hasHooks: true,
+      hooks: { scripts: { setup: 'pnpm install' } },
+      mayNeedUpdate: false,
+      stale: false,
+      age: 0,
+      availability: 'ready',
+      contentState: 'valid',
+      lastError: null
+    })
+    expect(readOrcaYamlSnapshotMock).toHaveBeenCalledWith('/workspace/repo')
+    expect(hasHooksFileMock).not.toHaveBeenCalled()
+    expect(loadHooksMock).not.toHaveBeenCalled()
   })
 
   it('inspects hooks on the requested host when repo ids collide', async () => {

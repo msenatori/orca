@@ -6,32 +6,72 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { ProviderRateLimits } from '../../shared/rate-limit-types'
 import { RateLimitService } from './service'
-import { fetchClaudeRateLimits, fetchManagedAccountUsage } from './claude-fetcher'
-import { consumeCodexRateLimitResetCredit, fetchCodexRateLimits } from './codex-fetcher'
+import {
+  fetchClaudeRateLimits,
+  fetchManagedAccountUsage,
+  hydrateClaudeLegacyOAuthCredentialSnapshot,
+  hydrateClaudeOAuthCredentialSnapshot
+} from './claude-fetcher'
+import {
+  consumeCodexRateLimitResetCredit,
+  fetchCodexRateLimits,
+  hydrateCodexCredentialSnapshot
+} from './codex-fetcher'
 import { fetchGeminiRateLimits } from './gemini-usage-fetcher'
-import { fetchKimiRateLimits } from './kimi-fetcher'
+import { hydrateGeminiOAuthPreparationSnapshot } from './gemini-oauth-preparation-snapshot'
+import { fetchKimiRateLimits, refreshKimiCredentialSnapshot } from './kimi-fetcher'
 import { fetchMiniMaxRateLimits } from './minimax-fetcher'
 import { fetchGrokRateLimits } from './grok-fetcher'
-import { readGrokAuthSession } from './grok-auth'
+import { getGrokAuthSnapshot, refreshGrokAuthSnapshot } from './grok-auth-snapshot'
 import { fetchOpenCodeGoRateLimits } from './opencode-go-usage-fetcher'
-import { hasMiniMaxSessionCookie } from '../minimax/minimax-cookie-store'
+import {
+  hasMiniMaxSessionCookie,
+  hydrateMiniMaxSessionCookie
+} from '../minimax/minimax-cookie-store'
+import { hydrateHiddenRateLimitPtyCwd } from './hidden-rate-limit-pty-cwd'
 
 vi.mock('./claude-fetcher', () => ({
   fetchClaudeRateLimits: vi.fn(),
-  fetchManagedAccountUsage: vi.fn()
+  fetchManagedAccountUsage: vi.fn(),
+  hydrateClaudeOAuthCredentialSnapshot: vi.fn(() =>
+    Promise.resolve({ token: null, hasRefreshableCredentials: false, source: 'none' })
+  ),
+  hydrateClaudeLegacyOAuthCredentialSnapshot: vi.fn(() =>
+    Promise.resolve({ token: null, hasRefreshableCredentials: false, source: 'none' })
+  )
 }))
 
 vi.mock('./codex-fetcher', () => ({
   consumeCodexRateLimitResetCredit: vi.fn(),
-  fetchCodexRateLimits: vi.fn()
+  fetchCodexRateLimits: vi.fn(),
+  hydrateCodexCredentialSnapshot: vi.fn(() =>
+    Promise.resolve({ status: 'present', authJson: '{}' })
+  )
 }))
 
 vi.mock('./gemini-usage-fetcher', () => ({
   fetchGeminiRateLimits: vi.fn()
 }))
 
+vi.mock('./gemini-oauth-preparation-snapshot', () => ({
+  getGeminiOAuthPreparationSnapshot: vi.fn(() => ({
+    value: null,
+    stale: false,
+    age: 0,
+    availability: 'missing'
+  })),
+  hydrateGeminiOAuthPreparationSnapshot: vi.fn(() => Promise.resolve())
+}))
+
 vi.mock('./kimi-fetcher', () => ({
-  fetchKimiRateLimits: vi.fn()
+  fetchKimiRateLimits: vi.fn(),
+  getKimiCredentialSnapshot: vi.fn(() => ({
+    value: { access_token: 'token', expires_at: 99_999_999_999 },
+    stale: false,
+    age: 0,
+    availability: 'ready'
+  })),
+  refreshKimiCredentialSnapshot: vi.fn(() => Promise.resolve())
 }))
 
 vi.mock('./opencode-go-usage-fetcher', () => ({
@@ -46,12 +86,36 @@ vi.mock('./grok-fetcher', () => ({
   fetchGrokRateLimits: vi.fn()
 }))
 
-vi.mock('./grok-auth', () => ({
-  readGrokAuthSession: vi.fn(() => ({ status: 'missing' }))
+vi.mock('./grok-auth-snapshot', () => ({
+  getGrokAuthSnapshot: vi.fn(() => ({
+    value: null,
+    stale: false,
+    age: 0,
+    availability: 'missing'
+  })),
+  refreshGrokAuthSnapshot: vi.fn(() => Promise.resolve())
 }))
 
 vi.mock('../minimax/minimax-cookie-store', () => ({
-  hasMiniMaxSessionCookie: vi.fn(() => false)
+  hasMiniMaxSessionCookie: vi.fn(() => false),
+  getMiniMaxCredentialSnapshot: vi.fn(() => ({
+    value: null,
+    stale: false,
+    age: 0,
+    availability: 'missing'
+  })),
+  hydrateMiniMaxSessionCookie: vi.fn(() => Promise.resolve())
+}))
+
+vi.mock('./hidden-rate-limit-pty-cwd', () => ({
+  hydrateHiddenRateLimitPtyCwd: vi.fn(() =>
+    Promise.resolve({
+      value: '/tmp/rate-limit-pty-cwd',
+      stale: false,
+      age: 0,
+      availability: 'ready'
+    })
+  )
 }))
 
 type Deferred<T> = {
@@ -186,43 +250,95 @@ describe('RateLimitService', () => {
       status: 'unavailable'
     })
     vi.mocked(hasMiniMaxSessionCookie).mockReturnValue(false)
-    vi.mocked(readGrokAuthSession).mockReturnValue({ status: 'missing' })
+    vi.mocked(getGrokAuthSnapshot).mockReturnValue({
+      value: null,
+      stale: false,
+      age: 0,
+      availability: 'missing'
+    })
   })
 
-  it('does not reread Grok auth when callers read state snapshots', () => {
-    vi.mocked(readGrokAuthSession).mockReturnValue({
-      status: 'ok',
-      session: {
+  it('reads Grok account state from the memory snapshot', () => {
+    vi.mocked(getGrokAuthSnapshot).mockReturnValue({
+      value: {
         accessToken: 'token',
         userId: null,
         email: null,
         teamId: null,
         expiresAtMs: null,
         oidcClientId: null
-      }
+      },
+      stale: false,
+      age: 0,
+      availability: 'ready'
     })
     const service = new RateLimitService()
-    vi.mocked(readGrokAuthSession).mockClear()
 
-    expect(service.getState().grokAuthConfigured).toBe(true)
+    expect(service.getState().grokCredentialSnapshot?.value?.signedIn).toBe(true)
     service.getState()
+  })
 
-    expect(readGrokAuthSession).not.toHaveBeenCalled()
+  it('uses only hydrated memory snapshots during an automated full cycle', async () => {
+    const service = new RateLimitService()
+    const codexResolver = vi.fn(() => '/managed/codex')
+    const codexCommandResolver = vi.fn(() => '/managed/bin/codex')
+    const claudeResolver = vi.fn(async () => ({
+      configDir: '/managed/claude',
+      envPatch: { CLAUDE_CONFIG_DIR: '/managed/claude' },
+      stripAuthEnv: true,
+      provenance: 'managed:account-1'
+    }))
+    service.setCodexHomePathResolver(codexResolver)
+    service.setCodexCommandResolver(codexCommandResolver)
+    service.setClaudeAuthPreparationResolver(claudeResolver)
+    vi.mocked(fetchClaudeRateLimits).mockResolvedValue(okProvider('claude', 10))
+    vi.mocked(fetchCodexRateLimits).mockResolvedValue(okProvider('codex', 10))
+
+    await service.hydrateSnapshots()
+    codexResolver.mockClear()
+    codexCommandResolver.mockClear()
+    claudeResolver.mockClear()
+    vi.mocked(hydrateHiddenRateLimitPtyCwd).mockClear()
+    vi.mocked(hydrateCodexCredentialSnapshot).mockClear()
+    vi.mocked(hydrateClaudeOAuthCredentialSnapshot).mockClear()
+    vi.mocked(hydrateClaudeLegacyOAuthCredentialSnapshot).mockClear()
+    vi.mocked(hydrateGeminiOAuthPreparationSnapshot).mockClear()
+    vi.mocked(refreshKimiCredentialSnapshot).mockClear()
+    vi.mocked(refreshGrokAuthSnapshot).mockClear()
+    vi.mocked(hydrateMiniMaxSessionCookie).mockClear()
+
+    await (
+      service as unknown as { fetchAll(options?: { force?: boolean }): Promise<void> }
+    ).fetchAll()
+
+    expect(codexResolver).not.toHaveBeenCalled()
+    expect(codexCommandResolver).not.toHaveBeenCalled()
+    expect(claudeResolver).not.toHaveBeenCalled()
+    expect(hydrateHiddenRateLimitPtyCwd).not.toHaveBeenCalled()
+    expect(hydrateCodexCredentialSnapshot).not.toHaveBeenCalled()
+    expect(hydrateClaudeOAuthCredentialSnapshot).not.toHaveBeenCalled()
+    expect(hydrateClaudeLegacyOAuthCredentialSnapshot).not.toHaveBeenCalled()
+    expect(hydrateGeminiOAuthPreparationSnapshot).not.toHaveBeenCalled()
+    expect(refreshKimiCredentialSnapshot).not.toHaveBeenCalled()
+    expect(refreshGrokAuthSnapshot).not.toHaveBeenCalled()
+    expect(hydrateMiniMaxSessionCookie).not.toHaveBeenCalled()
   })
 
   it('refreshes Grok without refreshing other providers', async () => {
-    const authReadResult = {
-      status: 'ok' as const,
-      session: {
+    const authSnapshot = {
+      value: {
         accessToken: 'token',
         userId: null,
         email: 'dev@example.com',
         teamId: null,
         expiresAtMs: null,
         oidcClientId: null
-      }
+      },
+      stale: false,
+      age: 0,
+      availability: 'ready' as const
     }
-    vi.mocked(readGrokAuthSession).mockReturnValue(authReadResult)
+    vi.mocked(getGrokAuthSnapshot).mockReturnValue(authSnapshot)
     vi.mocked(fetchGrokRateLimits).mockResolvedValueOnce(okProvider('grok', 42))
     const service = new RateLimitService()
 
@@ -230,7 +346,7 @@ describe('RateLimitService', () => {
 
     expect(fetchGrokRateLimits).toHaveBeenCalledTimes(1)
     expect(fetchGrokRateLimits).toHaveBeenCalledWith({
-      authReadResult,
+      authSnapshot,
       signal: expect.any(AbortSignal)
     })
     expect(fetchClaudeRateLimits).not.toHaveBeenCalled()
@@ -252,12 +368,15 @@ describe('RateLimitService', () => {
     vi.mocked(fetchCodexRateLimits)
       .mockImplementationOnce(() => firstCodex.promise)
       .mockResolvedValueOnce(okProvider('codex', 42))
+    await service.hydrateSnapshots()
 
-    const fullRefresh = service.refresh()
-    await Promise.resolve()
+    const fullRefresh = serviceInternals(service).fetchAll()
+    await vi.waitFor(() => {
+      expect(fetchClaudeRateLimits).toHaveBeenCalledTimes(1)
+      expect(fetchCodexRateLimits).toHaveBeenCalledTimes(1)
+    })
 
     const switchRefresh = service.refreshForCodexAccountChange()
-    await Promise.resolve()
 
     firstClaude.resolve(okProvider('claude', 18))
     firstCodex.resolve(okProvider('codex', 24))
@@ -299,13 +418,14 @@ describe('RateLimitService', () => {
     expect(secondWindow.listenerCount('closed')).toBe(0)
   })
 
-  it('sanitizes renderer-provided polling intervals before scheduling timers', () => {
+  it('sanitizes renderer-provided polling intervals before scheduling timers', async () => {
     vi.useFakeTimers()
     const intervalSpy = vi.spyOn(globalThis, 'setInterval')
     try {
       vi.mocked(fetchClaudeRateLimits).mockResolvedValue(okProvider('claude', 12))
       vi.mocked(fetchCodexRateLimits).mockResolvedValue(okProvider('codex', 24))
       const service = new RateLimitService()
+      await service.hydrateSnapshots()
 
       service.setPollingInterval(Number.NaN)
       service.start()
@@ -329,6 +449,7 @@ describe('RateLimitService', () => {
     vi.mocked(fetchCodexRateLimits).mockResolvedValue(okProvider('codex', 24))
     const service = new RateLimitService()
     const window = new FakeRateLimitWindow()
+    await service.hydrateSnapshots()
 
     service.attach(asRateLimitWindow(window))
     service.start({ fetchImmediately: false })
@@ -354,6 +475,7 @@ describe('RateLimitService', () => {
       vi.mocked(fetchCodexRateLimits).mockResolvedValue(okProvider('codex', 24))
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
 
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
@@ -382,6 +504,7 @@ describe('RateLimitService', () => {
 
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
 
@@ -415,6 +538,7 @@ describe('RateLimitService', () => {
 
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
 
@@ -471,6 +595,7 @@ describe('RateLimitService', () => {
 
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
 
@@ -527,6 +652,7 @@ describe('RateLimitService', () => {
 
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
 
@@ -575,6 +701,7 @@ describe('RateLimitService', () => {
 
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
 
@@ -670,6 +797,7 @@ describe('RateLimitService', () => {
 
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
 
@@ -958,6 +1086,7 @@ describe('RateLimitService', () => {
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
       const claudeStatuses: string[] = []
+      await service.hydrateSnapshots()
       service.onStateChange((state) => {
         if (state.claude) {
           claudeStatuses.push(state.claude.status)
@@ -1001,6 +1130,7 @@ describe('RateLimitService', () => {
 
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
 
@@ -1045,6 +1175,7 @@ describe('RateLimitService', () => {
 
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
 
@@ -1084,6 +1215,7 @@ describe('RateLimitService', () => {
 
       const service = new RateLimitService()
       const window = new FakeRateLimitWindow()
+      await service.hydrateSnapshots()
       service.attach(asRateLimitWindow(window))
       service.start({ fetchImmediately: false })
 
@@ -1105,6 +1237,7 @@ describe('RateLimitService', () => {
   it('keeps recent stale data across repeated failures', async () => {
     const service = new RateLimitService()
     const internal = serviceInternals(service)
+    await service.hydrateSnapshots()
 
     vi.mocked(fetchClaudeRateLimits)
       .mockResolvedValueOnce(okProvider('claude', 33, Date.now()))
@@ -1153,6 +1286,7 @@ describe('RateLimitService', () => {
     const service = new RateLimitService()
     vi.mocked(fetchClaudeRateLimits).mockResolvedValue(okProvider('claude', 10))
     vi.mocked(fetchCodexRateLimits).mockResolvedValue(okProvider('codex', 20))
+    await service.hydrateSnapshots()
 
     await service.refreshIfStale()
     await service.refreshIfStale()
@@ -1168,6 +1302,7 @@ describe('RateLimitService', () => {
     const codex = deferred<ProviderRateLimits>()
     vi.mocked(fetchClaudeRateLimits).mockReturnValue(claude.promise)
     vi.mocked(fetchCodexRateLimits).mockReturnValue(codex.promise)
+    await service.hydrateSnapshots()
 
     const firstRefresh = service.refreshIfStale()
     await Promise.resolve()
@@ -1195,6 +1330,7 @@ describe('RateLimitService', () => {
     vi.mocked(fetchCodexRateLimits)
       .mockImplementationOnce(() => firstCodex.promise)
       .mockImplementationOnce(() => secondCodex.promise)
+    await service.hydrateSnapshots()
 
     const backgroundFetch = serviceInternals(service).fetchAll()
     await Promise.resolve()
@@ -1239,7 +1375,10 @@ describe('RateLimitService', () => {
     const refresh = service.refresh().then(() => {
       refreshResolved = true
     })
-    await flushMicrotasks()
+    await vi.waitFor(() => {
+      expect(service.getState().claude?.status).toBe('ok')
+      expect(service.getState().grok?.status).toBe('fetching')
+    })
 
     const pendingGrokState = service.getState()
     expect(pendingGrokState.claude?.status).toBe('ok')
@@ -1296,13 +1435,17 @@ describe('RateLimitService', () => {
           )
         })
     )
+    await service.hydrateSnapshots()
 
     const activeFetch = serviceInternals(service).fetchAll()
-    await Promise.resolve()
-    await Promise.resolve()
+    await vi.waitFor(() => {
+      expect(capturedSignals.claude).toBeDefined()
+      expect(capturedSignals.codex).toBeDefined()
+      expect(capturedSignals.grok).toBeDefined()
+    })
 
     const queuedRefresh = service.refresh()
-    await Promise.resolve()
+    await flushMicrotasks(8)
 
     service.stop()
 
@@ -1365,7 +1508,9 @@ describe('RateLimitService', () => {
     )
 
     const previewFetch = service.fetchInactiveCodexAccountsOnOpen()
-    await Promise.resolve()
+    await vi.waitFor(() => {
+      expect(capturedSignals.codex).toBeDefined()
+    })
 
     service.stop()
 
@@ -1401,7 +1546,7 @@ describe('RateLimitService', () => {
     expect(fetchClaudeRateLimits).toHaveBeenCalledTimes(1)
     expect(fetchClaudeRateLimits).toHaveBeenCalledWith(
       expect.objectContaining({
-        authPreparation: undefined,
+        authPreparation: expect.objectContaining({ provenance: 'system' }),
         allowPtyFallback: false,
         allowUsagePanelSupplement: true,
         signal: expect.any(AbortSignal)
@@ -1409,7 +1554,10 @@ describe('RateLimitService', () => {
     )
     expect(fetchCodexRateLimits).toHaveBeenCalledTimes(1)
     expect(fetchGeminiRateLimits).toHaveBeenCalledTimes(1)
-    expect(fetchGeminiRateLimits).toHaveBeenCalledWith(true)
+    expect(fetchGeminiRateLimits).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ stale: false, availability: 'missing' })
+    )
     expect(fetchOpenCodeGoRateLimits).toHaveBeenCalledTimes(1)
     expect(fetchOpenCodeGoRateLimits).toHaveBeenCalledWith(
       'session=abc123',
@@ -1418,7 +1566,12 @@ describe('RateLimitService', () => {
     )
     expect(fetchGrokRateLimits).toHaveBeenCalledWith({
       signal: expect.any(AbortSignal),
-      authReadResult: { status: 'missing' }
+      authSnapshot: {
+        value: null,
+        stale: false,
+        age: 0,
+        availability: 'missing'
+      }
     })
 
     const state = service.getState()
@@ -1464,10 +1617,9 @@ describe('RateLimitService', () => {
         codexHomePath: '/tmp/codex-home'
       })
     ).resolves.toMatchObject({ outcome: 'reset' })
-    expect(consumeCodexRateLimitResetCredit).toHaveBeenCalledWith({
-      codexHomePath: '/tmp/codex-home',
-      idempotencyKey
-    })
+    expect(consumeCodexRateLimitResetCredit).toHaveBeenCalledWith(
+      expect.objectContaining({ codexHomePath: '/tmp/codex-home', idempotencyKey })
+    )
   })
 
   it('returns a refreshed scoped state without overwriting a target selected during reset', async () => {
@@ -1500,10 +1652,9 @@ describe('RateLimitService', () => {
         codex: { session: { usedPercent: 0 } }
       }
     })
-    expect(consume).toHaveBeenCalledWith({
-      codexHomePath: '/tmp/approved-selection',
-      idempotencyKey
-    })
+    expect(consume).toHaveBeenCalledWith(
+      expect.objectContaining({ codexHomePath: '/tmp/approved-selection', idempotencyKey })
+    )
     expect(fetchCodexRateLimits).toHaveBeenCalledWith(
       expect.objectContaining({
         codexHomePath: '/tmp/approved-selection',
@@ -1680,7 +1831,7 @@ describe('RateLimitService', () => {
     )
   })
 
-  it('does not use Claude PTY fallback when Claude auth preparation is unavailable', async () => {
+  it('does not use Claude PTY fallback for implicit system-default preparation', async () => {
     const service = new RateLimitService()
 
     vi.mocked(fetchClaudeRateLimits).mockResolvedValueOnce(okProvider('claude', 10, Date.now()))
@@ -1690,7 +1841,7 @@ describe('RateLimitService', () => {
 
     expect(fetchClaudeRateLimits).toHaveBeenCalledWith(
       expect.objectContaining({
-        authPreparation: undefined,
+        authPreparation: expect.objectContaining({ provenance: 'system' }),
         allowPtyFallback: false,
         allowUsagePanelSupplement: true,
         signal: expect.any(AbortSignal)

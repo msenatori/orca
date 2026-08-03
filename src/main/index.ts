@@ -61,6 +61,7 @@ import {
   isAgentStatusHooksEnabled,
   removeManagedAgentHooks
 } from './agent-hooks/managed-agent-hook-controls'
+import { reconcileLocalOrcaYamlSnapshots } from './git/orca-yaml-snapshot-store'
 import { initCohortClassifier } from './telemetry/cohort-classifier'
 import { initOnboardingCohortClassifier } from './telemetry/onboarding-cohort-classifier'
 import { resolveConsent } from './telemetry/consent'
@@ -178,6 +179,8 @@ import { readMiniMaxSessionCookie } from './minimax/minimax-cookie-store'
 import { getInitialClaudeRateLimitTarget } from './rate-limits/claude-rate-limit-target'
 import { getInitialCodexRateLimitTarget } from './rate-limits/codex-rate-limit-target'
 import { createAccountRuntimeTargetSettingsSync } from './rate-limits/account-runtime-target-sync'
+import { resolveCodexCommand } from './codex-cli/command'
+import { hydrateMacTailscaleDnsDiagnostic } from './network/macos-tailscale-dns-diagnostic'
 import {
   attachMainWindowServices,
   ensureAutoUpdaterConfigured
@@ -259,6 +262,11 @@ import { PluginMarketplaceInstaller } from './plugins/plugin-marketplace-install
 import { PluginBundledBootstrapCoordinator } from './plugins/plugin-bundled-bootstrap-coordinator'
 import { resolveBundledPluginRoot } from './plugins/plugin-bundled-bootstrap'
 import { resolvePluginHostEntryPath } from './plugins/plugin-host-process'
+import { resolveFilesystemHostEntryPath } from './filesystem-host/filesystem-host-entry-path'
+import {
+  configureFilesystemHostReadAuthority,
+  FilesystemHostReadAuthority
+} from './filesystem-host/filesystem-host-read-authority'
 import { applyPluginConsent, applyPluginEnablement } from './plugins/plugin-enablement'
 import { setPluginServiceForRpc } from './runtime/rpc/methods/plugins'
 import {
@@ -343,6 +351,7 @@ let pluginKillListService: PluginKillListService | null = null
 let pluginMarketplaceService: PluginMarketplaceService | null = null
 let pluginMarketplaceInstaller: PluginMarketplaceInstaller | null = null
 let keybindings: KeybindingService | null = null
+let filesystemHostReadAuthority: FilesystemHostReadAuthority | null = null
 
 function emitPluginWorktreeLifecycle(event: RuntimeWorktreeLifecycleEvent): void {
   pluginService?.emitEvent(
@@ -1978,6 +1987,10 @@ function shouldSuppressCodexAutoApprovalSyntheticTitleFromHook(args: {
 }
 
 void app.whenReady().then(async () => {
+  filesystemHostReadAuthority = new FilesystemHostReadAuthority({
+    entryPath: resolveFilesystemHostEntryPath(app.getAppPath(), app.isPackaged)
+  })
+  configureFilesystemHostReadAuthority(filesystemHostReadAuthority)
   logStartupMilestone('app-ready')
   installMainThreadHangWatchdog({ userDataPath: getCanonicalUserDataPath() })
   const hangDetection = consumeHangDetectionMarker(
@@ -2042,8 +2055,13 @@ void app.whenReady().then(async () => {
 
   const activeOrcaProfile = ensureActiveOrcaProfile()
   store = new Store({ dataFile: activeOrcaProfile.dataFile })
+  filesystemHostReadAuthority.hydrateFailureDomains([
+    app.getPath('home'),
+    getCanonicalUserDataPath()
+  ])
   wslHookRelayManager.setManagedHookSettingsResolver(() => store?.getSettings() ?? null)
   logStartupMilestone('store-loaded')
+  reconcileLocalOrcaYamlSnapshots(store.getRepos())
   // Why: apply initial fallback WSL distro from store settings for global git/CLI calls.
   setDefaultWslDistroOverride(store.getSettings().terminalWindowsWslDistro ?? null)
   store.onSettingsChanged((updates, settings) => {
@@ -2196,6 +2214,7 @@ void app.whenReady().then(async () => {
   rateLimits.setCodexHomePathResolver((target) =>
     codexRuntimeHome!.prepareForRateLimitFetch(target)
   )
+  rateLimits.setCodexCommandResolver(() => resolveCodexCommand())
   rateLimits.setCodexFetchTarget(getInitialCodexRateLimitTarget(store.getSettings()))
   rateLimits.setClaudeFetchTarget(getInitialClaudeRateLimitTarget(store.getSettings()))
   const syncAccountRuntimeTargets = createAccountRuntimeTargetSettingsSync(
@@ -2242,6 +2261,9 @@ void app.whenReady().then(async () => {
       }
     }
   })
+  void keybindings
+    .hydrate()
+    .catch((error) => console.warn('[keybindings] Initial snapshot hydration failed:', error))
   browserManager.setSettingsResolver(() => ({ keybindings: keybindings?.getOverrides() }))
   rateLimits.setInactiveClaudeAccountsResolver(() => {
     const settings = store!.getSettings()
@@ -2273,6 +2295,14 @@ void app.whenReady().then(async () => {
       .filter((account) => !activeIds.has(account.id))
       .map((account) => ({ id: account.id, managedHomePath: account.managedHomePath }))
   })
+  // Snapshot hydration must never delay window creation; unavailable values degrade in memory.
+  void rateLimits
+    .hydrateSnapshots()
+    .catch((error) => console.warn('[rate-limits] Initial snapshot hydration failed:', error))
+  void codexAccounts
+    .hydrateSystemDefaultIdentity()
+    .catch((error) => console.warn('[codex-accounts] Identity hydration failed:', error))
+  void hydrateMacTailscaleDnsDiagnostic()
   const orchestrationEnvironmentTransport: OrchestrationEnvironmentTransport = {
     resolve: (selector) => {
       const environment = resolveEnvironment(app.getPath('userData'), selector)
@@ -2978,6 +3008,8 @@ app.on('will-quit', (e) => {
   pluginMarketplaceInstaller = null
   const pluginHostShutdown = pluginService?.dispose() ?? Promise.resolve()
   pluginService = null
+  const filesystemHostShutdown = filesystemHostReadAuthority?.dispose() ?? Promise.resolve()
+  filesystemHostReadAuthority = null
   setUnreadDockBadgeCount(0)
   agentHookServer.stop()
   // Why: cancels relay restart/reinstall timers and kills wsl.exe children deterministically, not via stdio-pipe teardown.
@@ -3032,6 +3064,7 @@ app.on('will-quit', (e) => {
     { name: 'watchers', promise: watcherShutdown },
     { name: 'emulator', promise: emulatorShutdown },
     { name: 'plugin-hosts', promise: pluginHostShutdown },
+    { name: 'filesystem-hosts', promise: filesystemHostShutdown },
     { name: 'usage-cache', promise: usageCacheFlush },
     { name: 'stats', promise: statsFlush },
     { name: 'state', promise: storeFlush }

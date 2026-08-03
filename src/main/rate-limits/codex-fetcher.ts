@@ -5,11 +5,10 @@ import type {
   RateLimitWindow
 } from '../../shared/rate-limit-types'
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { cancelUnreadResponseBody } from '../lib/unread-response-body'
 import { join } from 'node:path'
-import { probeCodexAuthPresence } from './codex-auth-presence'
+import { readSnapshotFileThroughFilesystemHost } from '../filesystem-host/filesystem-host-read-authority'
 import { extractClaudePtyResetMetadata } from './claude-pty-reset-parser'
 import {
   classifyCodexRateLimitWindows,
@@ -18,7 +17,6 @@ import {
   type CodexRateLimitWindowsSnapshot,
   type CodexRateWindowSnapshot
 } from './codex-rate-limit-window-classification'
-import { resolveCodexCommand } from '../codex-cli/command'
 import { withMacTailscaleDnsHint } from '../network/macos-tailscale-dns-diagnostic'
 import { getCmdExePath, getSpawnArgsForWindows } from '../win32-utils'
 import { cleanupHiddenRateLimitPty, registerHiddenRateLimitPty } from './hidden-pty-cleanup'
@@ -29,13 +27,9 @@ import {
   escapeWslShCommandForWindows
 } from '../../shared/wsl-login-shell-command'
 import {
-  getHiddenRateLimitWslCwdSetupCommands,
-  resolveHiddenRateLimitPtyCwd
+  getHiddenRateLimitPtyCwdSnapshot,
+  getHiddenRateLimitWslCwdSetupCommands
 } from './hidden-rate-limit-pty-cwd'
-import {
-  createAuthFilesystemOperation,
-  type SharedAuthFilesystemOperation
-} from './auth-filesystem-operation'
 
 const RPC_TIMEOUT_MS = 10_000
 const WSL_RPC_TIMEOUT_MS = 25_000
@@ -56,8 +50,40 @@ const MAX_DIAGNOSTIC_OUTPUT_LENGTH = 100_000
 
 export type FetchCodexRateLimitsOptions = {
   codexHomePath?: string | null
+  codexCommand?: string
+  hiddenPtyCwd?: string
+  authSnapshot?: CodexCredentialSnapshot
   allowPtyFallback?: boolean
   signal?: AbortSignal
+}
+
+export type CodexCredentialSnapshot =
+  | { status: 'present'; authJson: string }
+  | { status: 'absent' | 'denied' | 'unavailable'; authJson: null }
+
+export async function hydrateCodexCredentialSnapshot(
+  codexHomePath?: string | null
+): Promise<CodexCredentialSnapshot> {
+  try {
+    return {
+      status: 'present',
+      authJson: (
+        await readSnapshotFileThroughFilesystemHost(
+          join(getCodexHomePath(codexHomePath), 'auth.json'),
+          'codex-auth'
+        )
+      ).toString('utf8')
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return { status: 'absent', authJson: null }
+    }
+    if (code === 'EACCES' || code === 'EPERM') {
+      return { status: 'denied', authJson: null }
+    }
+    return { status: 'unavailable', authJson: null }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -135,15 +161,6 @@ type BackendConsumeRateLimitResetCreditResponse = {
 type CodexBackendAuthHeaders = {
   headers: Record<string, string>
 }
-
-type BackendAuthReadResult =
-  | { content: string; error?: never }
-  | { content?: never; error: unknown }
-
-const backendAuthReadByPath = new Map<
-  string,
-  SharedAuthFilesystemOperation<BackendAuthReadResult>
->()
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`
@@ -306,38 +323,6 @@ function createBackendRequestSignal(
   return callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal
 }
 
-function getBackendAuthRead(
-  authPath: string
-): SharedAuthFilesystemOperation<BackendAuthReadResult> {
-  const existing = backendAuthReadByPath.get(authPath)
-  if (existing) {
-    return existing
-  }
-  // Why: dedupe UNC reads because Node cannot cancel an in-flight read.
-  const read = createAuthFilesystemOperation(authPath, () =>
-    readFile(authPath, 'utf8').then(
-      (content) => ({ content }),
-      (error: unknown) => ({ error })
-    )
-  )
-  backendAuthReadByPath.set(authPath, read)
-  const clearRead = (): void => {
-    if (backendAuthReadByPath.get(authPath) === read) {
-      backendAuthReadByPath.delete(authPath)
-    }
-  }
-  void read.result.then(clearRead, clearRead)
-  return read
-}
-
-async function readBackendAuth(authPath: string, signal: AbortSignal): Promise<string> {
-  const result = await getBackendAuthRead(authPath).wait(signal)
-  if ('error' in result) {
-    throw result.error
-  }
-  return result.content
-}
-
 async function getCodexBackendAuthHeaders(
   options: FetchCodexRateLimitsOptions | undefined,
   signal: AbortSignal
@@ -345,8 +330,12 @@ async function getCodexBackendAuthHeaders(
   if (signal.aborted) {
     return null
   }
-  const authPath = join(getCodexHomePath(options?.codexHomePath), 'auth.json')
-  const auth = JSON.parse(await readBackendAuth(authPath, signal)) as CodexAuthFile
+  const authJson =
+    options?.authSnapshot?.status === 'present' ? options.authSnapshot.authJson : null
+  if (!authJson) {
+    return null
+  }
+  const auth = JSON.parse(authJson) as CodexAuthFile
   const accessToken = auth.tokens?.access_token
   if (!accessToken) {
     return null
@@ -428,6 +417,7 @@ function mapBackendConsumeOutcome(code: string | undefined): CodexRateLimitReset
 
 export async function consumeCodexRateLimitResetCredit(options: {
   codexHomePath?: string | null
+  authSnapshot?: CodexCredentialSnapshot
   idempotencyKey: string
 }): Promise<CodexRateLimitResetOutcome> {
   if (!options.idempotencyKey.trim()) {
@@ -609,6 +599,10 @@ async function fetchViaRpc(options?: FetchCodexRateLimitsOptions): Promise<Provi
   if (options?.signal?.aborted) {
     return abortedCodexRateLimitResult()
   }
+  const cwd = options?.hiddenPtyCwd ?? getHiddenRateLimitPtyCwdSnapshot().value
+  if (!cwd) {
+    throw new Error('Hidden rate-limit PTY cwd snapshot unavailable')
+  }
   return new Promise<ProviderRateLimits>((resolve) => {
     let buffer = ''
     let stderr = ''
@@ -621,14 +615,14 @@ async function fetchViaRpc(options?: FetchCodexRateLimitsOptions): Promise<Provi
       : null
     // Why: cold WSL startup can exceed the host RPC budget.
     const rpcTimeoutMs = wslCodex ? WSL_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS
-    const codexCommand = wslCodex ? 'codex' : resolveCodexCommand()
+    const codexCommand = wslCodex ? 'codex' : (options?.codexCommand ?? 'codex')
     // Why: launch .cmd/.bat files through cmd.exe /c; shell:true triggers DEP0190.
     const { spawnCmd, spawnArgs } = wslCodex
       ? { spawnCmd: wslCodex.command, spawnArgs: wslCodex.args }
       : getSpawnArgsForWindows(codexCommand, codexArgs)
     const child = spawn(spawnCmd, spawnArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      cwd: resolveHiddenRateLimitPtyCwd(),
+      cwd,
       // Why: scope the selected account to this subprocess only; never mutate process.env globally.
       // Why windowsHide: without it, background cmd.exe /c polls flash a console window on Windows.
       windowsHide: true,
@@ -907,7 +901,11 @@ async function fetchViaPty(options?: FetchCodexRateLimitsOptions): Promise<Provi
     return abortedCodexRateLimitResult()
   }
   const wslCodex = options?.codexHomePath ? buildWslCodexCommand(options.codexHomePath, []) : null
-  const codexCommand = wslCodex ? 'codex' : resolveCodexCommand()
+  const codexCommand = wslCodex ? 'codex' : (options?.codexCommand ?? 'codex')
+  const cwd = options?.hiddenPtyCwd ?? getHiddenRateLimitPtyCwdSnapshot().value
+  if (!cwd) {
+    throw new Error('Hidden rate-limit PTY cwd snapshot unavailable')
+  }
 
   // Why: use cmd.exe on Windows so PATHEXT resolves codex.cmd under Electron's minimal PATH.
   const isWin32 = process.platform === 'win32'
@@ -925,7 +923,7 @@ async function fetchViaPty(options?: FetchCodexRateLimitsOptions): Promise<Provi
       name: 'xterm-256color',
       cols: 120,
       rows: 40,
-      cwd: resolveHiddenRateLimitPtyCwd(),
+      cwd,
       env: {
         ...(wslCodex ? cloneProcessEnvWithoutCodexHome() : process.env),
         TERM: 'xterm-256color',
@@ -1148,13 +1146,7 @@ export async function fetchCodexRateLimits(
   if (options?.signal?.aborted) {
     return abortedCodexRateLimitResult()
   }
-  // Why: spawn Codex only when signed in to avoid an unexpected failing process.
-  const authPresence = await probeCodexAuthPresence(options?.codexHomePath, {
-    signal: options?.signal
-  })
-  if (options?.signal?.aborted) {
-    return abortedCodexRateLimitResult()
-  }
+  const authPresence = options?.authSnapshot?.status ?? 'unavailable'
   if (authPresence === 'absent') {
     return {
       provider: 'codex',
@@ -1172,8 +1164,8 @@ export async function fetchCodexRateLimits(
       weekly: null,
       updatedAt: Date.now(),
       error:
-        authPresence === 'timeout'
-          ? 'Timed out while checking Codex sign-in status'
+        authPresence === 'denied'
+          ? 'Codex sign-in status access was denied'
           : 'Codex sign-in status is unavailable',
       status: 'error'
     }

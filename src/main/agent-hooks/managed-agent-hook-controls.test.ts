@@ -31,8 +31,10 @@ vi.mock('./managed-agent-hook-registry', () => ({
 
 import {
   applyAgentStatusHooksEnabled,
+  getManagedAgentHookStatuses,
   installManagedAgentHooks
 } from './managed-agent-hook-controls'
+import { agentHookInstallStatusSnapshots } from './install-status-snapshot-store'
 
 function status(agent: 'claude' | 'codex', state: 'installed' | 'not_installed') {
   return {
@@ -47,6 +49,7 @@ function status(agent: 'claude' | 'codex', state: 'installed' | 'not_installed')
 describe('managed agent hook controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    agentHookInstallStatusSnapshots.resetForTests()
     mocks.installClaude.mockReturnValue(status('claude', 'installed'))
     mocks.installCodex.mockReturnValue(status('codex', 'installed'))
     mocks.removeClaude.mockReturnValue(status('claude', 'not_installed'))
@@ -71,6 +74,12 @@ describe('managed agent hook controls', () => {
       }),
       expect.objectContaining({ agent: 'codex', state: 'installed' })
     ])
+    expect(agentHookInstallStatusSnapshots.read('codex')).toMatchObject({
+      state: 'installed',
+      value: expect.objectContaining({ state: 'installed' }),
+      stale: false,
+      availability: 'ready'
+    })
   })
 
   it('fails closed when CLI detection rejects', async () => {
@@ -92,6 +101,17 @@ describe('managed agent hook controls', () => {
         skipReason: 'cli_presence_unknown'
       })
     ])
+  })
+
+  it('serves status inspection from snapshots without invoking filesystem readers', () => {
+    agentHookInstallStatusSnapshots.publish(status('claude', 'installed'))
+
+    expect(getManagedAgentHookStatuses()).toEqual([
+      expect.objectContaining({ agent: 'claude', state: 'installed' }),
+      expect.objectContaining({ agent: 'codex', state: 'error' })
+    ])
+    expect(mocks.statusClaude).not.toHaveBeenCalled()
+    expect(mocks.statusCodex).not.toHaveBeenCalled()
   })
 
   it('removes disabled agents without probing or reinstalling them', async () => {

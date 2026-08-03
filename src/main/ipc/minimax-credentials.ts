@@ -1,18 +1,16 @@
 import { ipcMain } from 'electron'
 import {
   clearMiniMaxSessionCookie,
-  hasMiniMaxSessionCookie,
+  getMiniMaxCredentialSnapshot,
   saveMiniMaxSessionCookie
 } from '../minimax/minimax-cookie-store'
 import { clearMiniMaxSessionCookieJar } from '../rate-limits/minimax-request-context'
 import type { RateLimitService } from '../rate-limits/service'
-
-export type MiniMaxCredentialsStatus = {
-  configured: boolean
-}
+import type { MiniMaxCredentialsStatus } from '../../shared/rate-limit-types'
 
 function getMiniMaxCredentialsStatus(): MiniMaxCredentialsStatus {
-  return { configured: hasMiniMaxSessionCookie() }
+  const snapshot = getMiniMaxCredentialSnapshot()
+  return { ...snapshot, configured: snapshot.value?.configured === true }
 }
 
 // Why: fire-and-forget — callers get the persisted cookie status immediately;
@@ -29,18 +27,18 @@ function refreshAfterMiniMaxCredentialChange(
 
 export function registerMiniMaxCredentialsHandlers(rateLimits: RateLimitService | null): void {
   ipcMain.handle('minimaxCredentials:getStatus', () => getMiniMaxCredentialsStatus())
-  ipcMain.handle('minimaxCredentials:saveCookie', (_event, cookie: string) => {
+  ipcMain.handle('minimaxCredentials:saveCookie', async (_event, cookie: string) => {
     // Validate the IPC argument in the main process; the renderer-declared type
     // is compile-time only and the value arrives as unknown over IPC.
     if (typeof cookie !== 'string') {
       throw new Error('MiniMax session cookie must be a string')
     }
-    saveMiniMaxSessionCookie(cookie)
+    await saveMiniMaxSessionCookie(cookie)
     refreshAfterMiniMaxCredentialChange(rateLimits, 'save')
     return getMiniMaxCredentialsStatus()
   })
   ipcMain.handle('minimaxCredentials:clearCookie', async () => {
-    clearMiniMaxSessionCookie()
+    await clearMiniMaxSessionCookie()
     try {
       await clearMiniMaxSessionCookieJar()
     } catch (error) {

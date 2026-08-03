@@ -10,24 +10,30 @@ vi.mock('electron', () => ({
   net: { fetch: netFetchMock }
 }))
 
-vi.mock('node:fs', () => ({
-  existsSync: () => fsState.credentials !== null,
-  readFileSync: () => {
+vi.mock('node:fs/promises', () => ({
+  readFile: async () => {
     if (fsState.readError) {
       throw fsState.readError
     }
     if (fsState.credentials === null) {
-      throw new Error('ENOENT')
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     }
     return fsState.credentials
-  },
-  writeFileSync: () => {},
-  renameSync: () => {}
+  }
 }))
 
 vi.mock('node:os', () => ({ homedir: () => '/home/test' }))
 
-import { fetchKimiRateLimits } from './kimi-fetcher'
+import {
+  fetchKimiRateLimits,
+  getKimiCredentialSnapshot,
+  refreshKimiCredentialSnapshot
+} from './kimi-fetcher'
+
+async function fetchCurrent(): Promise<Awaited<ReturnType<typeof fetchKimiRateLimits>>> {
+  await refreshKimiCredentialSnapshot()
+  return fetchKimiRateLimits(getKimiCredentialSnapshot())
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
@@ -67,7 +73,7 @@ describe('fetchKimiRateLimits', () => {
   })
 
   it('returns unavailable when not signed in', async () => {
-    const result = await fetchKimiRateLimits()
+    const result = await fetchCurrent()
     expect(result.provider).toBe('kimi')
     expect(result.status).toBe('unavailable')
     expect(result.session).toBeNull()
@@ -79,7 +85,7 @@ describe('fetchKimiRateLimits', () => {
     fsState.credentials = freshCredentials()
     netFetchMock.mockResolvedValueOnce(jsonResponse(USAGE_RESPONSE))
 
-    const result = await fetchKimiRateLimits()
+    const result = await fetchCurrent()
 
     expect(result.status).toBe('ok')
     expect(result.provider).toBe('kimi')
@@ -98,7 +104,7 @@ describe('fetchKimiRateLimits', () => {
     fsState.credentials = freshCredentials()
     netFetchMock.mockResolvedValueOnce(jsonResponse({}, 500))
 
-    const result = await fetchKimiRateLimits()
+    const result = await fetchCurrent()
     expect(result.status).toBe('error')
     expect(result.session).toBeNull()
   })
@@ -106,19 +112,19 @@ describe('fetchKimiRateLimits', () => {
   it('surfaces an error when the credentials file cannot be parsed', async () => {
     fsState.credentials = '{'
 
-    const result = await fetchKimiRateLimits()
-    expect(result.status).toBe('error')
-    expect(result.error).toMatch(/json/i)
+    const result = await fetchCurrent()
+    expect(result.status).toBe('unavailable')
+    expect(result.error).not.toContain('{')
     expect(netFetchMock).not.toHaveBeenCalled()
   })
 
   it('surfaces an error when the credentials file cannot be read', async () => {
     fsState.credentials = freshCredentials()
-    fsState.readError = new Error('EACCES')
+    fsState.readError = Object.assign(new Error('private path'), { code: 'EACCES' })
 
-    const result = await fetchKimiRateLimits()
+    const result = await fetchCurrent()
     expect(result.status).toBe('error')
-    expect(result.error).toMatch(/EACCES/)
+    expect(result.error).toBe('Kimi credential access was denied')
     expect(netFetchMock).not.toHaveBeenCalled()
   })
 
@@ -126,7 +132,7 @@ describe('fetchKimiRateLimits', () => {
     fsState.credentials = freshCredentials()
     netFetchMock.mockResolvedValueOnce(jsonResponse({}))
 
-    const result = await fetchKimiRateLimits()
+    const result = await fetchCurrent()
     expect(result.status).toBe('error')
     expect(result.error).toMatch(/quota windows/)
     expect(result.session).toBeNull()
@@ -137,7 +143,7 @@ describe('fetchKimiRateLimits', () => {
     // expires_at in the past → token stale; fetcher must not hit the network.
     fsState.credentials = JSON.stringify({ access_token: 'tok-old', expires_at: 1 })
 
-    const result = await fetchKimiRateLimits()
+    const result = await fetchCurrent()
     expect(result.status).toBe('error')
     expect(result.error).toMatch(/expired/i)
     expect(result.error).toMatch(/run kimi on the computer running Orca/i)

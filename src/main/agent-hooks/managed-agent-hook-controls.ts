@@ -1,4 +1,8 @@
-import type { AgentHookInstallStatus, AgentHookTarget } from '../../shared/agent-hook-types'
+import type {
+  AgentHookInstallStatus,
+  AgentHookInstallStatusSnapshot,
+  AgentHookTarget
+} from '../../shared/agent-hook-types'
 import {
   getManagedAgentHookTarget,
   isManagedAgentHookTarget
@@ -6,10 +10,10 @@ import {
 import { normalizeDisabledTuiAgents } from '../../shared/tui-agent-selection'
 import type { GlobalSettings } from '../../shared/types'
 import { detectLocalManagedAgentCliPresence } from './local-agent-cli-presence'
+import { agentHookInstallStatusSnapshots } from './install-status-snapshot-store'
 import {
   MANAGED_AGENT_HOOK_INSTALLERS,
   MANAGED_AGENT_HOOK_REMOVERS,
-  MANAGED_AGENT_HOOK_STATUS_READERS,
   type ManagedAgentHookInstaller
 } from './managed-agent-hook-registry'
 
@@ -105,11 +109,13 @@ export async function installManagedAgentHooks(
     })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    return installers.map(([agent]) =>
+    const statuses = installers.map(([agent]) =>
       disabled.has(agent)
         ? skippedStatus(agent, 'agent_disabled', 'Agent is disabled in Settings.')
         : skippedStatus(agent, 'cli_presence_unknown', detail)
     )
+    agentHookInstallStatusSnapshots.publishAll(statuses)
+    return statuses
   }
 
   const results: AgentHookInstallStatus[] = []
@@ -142,12 +148,13 @@ export async function installManagedAgentHooks(
     }
     results.push(runInstaller(entry, options.onInstallError))
   }
+  agentHookInstallStatusSnapshots.publishAll(results)
   return results
 }
 
 export function removeManagedAgentHooks(options: RemoveOptions = {}): AgentHookInstallStatus[] {
   const allowed = options.agents ? new Set(options.agents) : null
-  return MANAGED_AGENT_HOOK_REMOVERS.filter(
+  const statuses = MANAGED_AGENT_HOOK_REMOVERS.filter(
     ([agent]) => allowed === null || allowed.has(agent)
   ).map(([agent, remove]) => {
     try {
@@ -156,16 +163,16 @@ export function removeManagedAgentHooks(options: RemoveOptions = {}): AgentHookI
       return errorStatus(agent, error)
     }
   })
+  agentHookInstallStatusSnapshots.publishAll(statuses)
+  return statuses
+}
+
+export function getManagedAgentHookStatusSnapshots(): AgentHookInstallStatusSnapshot[] {
+  return MANAGED_AGENT_HOOK_INSTALLERS.map(([agent]) => agentHookInstallStatusSnapshots.read(agent))
 }
 
 export function getManagedAgentHookStatuses(): AgentHookInstallStatus[] {
-  return MANAGED_AGENT_HOOK_STATUS_READERS.map(([agent, getStatus]) => {
-    try {
-      return getStatus()
-    } catch (error) {
-      return errorStatus(agent, error)
-    }
-  })
+  return getManagedAgentHookStatusSnapshots().map((snapshot) => snapshot.value ?? snapshot)
 }
 
 export async function applyAgentStatusHooksEnabled(

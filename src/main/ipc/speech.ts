@@ -7,12 +7,20 @@ import { deleteLocalSpeechModel } from '../speech/speech-model-deletion'
 import { getSpeechModelManager, getSpeechSttService } from '../speech/speech-runtime-service'
 import {
   clearOpenAiSpeechApiKey,
-  hasOpenAiSpeechApiKey,
+  getOpenAiSpeechApiKeySnapshot,
+  hydrateOpenAiSpeechApiKeySnapshot,
   saveOpenAiSpeechApiKey
 } from '../speech/openai-api-key-store'
 import type { Store } from '../persistence'
+import type { OpenAiSpeechApiKeyStatus } from '../../shared/speech-types'
+
+function getOpenAiApiKeyStatus(): OpenAiSpeechApiKeyStatus {
+  const snapshot = getOpenAiSpeechApiKeySnapshot()
+  return { ...snapshot, configured: snapshot.value === true }
+}
 
 export function registerSpeechHandlers(store: Store): void {
+  void hydrateOpenAiSpeechApiKeySnapshot()
   ipcMain.handle('speech:getCatalog', () => {
     return SPEECH_MODEL_CATALOG
   })
@@ -22,17 +30,17 @@ export function registerSpeechHandlers(store: Store): void {
   })
 
   ipcMain.handle('speech:getOpenAiApiKeyStatus', async () => {
-    return { configured: hasOpenAiSpeechApiKey() }
+    return getOpenAiApiKeyStatus()
   })
 
   ipcMain.handle('speech:saveOpenAiApiKey', async (_event, apiKey: string) => {
-    saveOpenAiSpeechApiKey(apiKey)
-    return { configured: true }
+    await saveOpenAiSpeechApiKey(apiKey)
+    return getOpenAiApiKeyStatus()
   })
 
   ipcMain.handle('speech:clearOpenAiApiKey', async () => {
-    clearOpenAiSpeechApiKey()
-    return { configured: false }
+    await clearOpenAiSpeechApiKey()
+    return getOpenAiApiKeyStatus()
   })
 
   ipcMain.handle('speech:downloadModel', async (event, modelId: string) => {

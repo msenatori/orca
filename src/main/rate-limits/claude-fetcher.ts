@@ -1,6 +1,5 @@
 /* eslint-disable max-lines -- Why: keep Claude credential ordering, OAuth usage fetch, and PTY fallback together so usage state can't drift across paths. */
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { net, session } from 'electron'
@@ -14,7 +13,10 @@ import type {
 import { parseWslUncPath } from '../../shared/wsl-paths'
 import type { NetworkProxySettings } from '../../shared/network-proxy'
 import { fetchViaPty } from './claude-pty'
-import type { ClaudeRuntimeAuthPreparation } from '../claude-accounts/runtime-auth-service'
+import type {
+  ClaudeOAuthCredentialSnapshot,
+  ClaudeRuntimeAuthPreparation
+} from '../claude-accounts/runtime-auth-service'
 import {
   deleteActiveClaudeKeychainCredentialsStrict,
   readActiveClaudeKeychainCredentials,
@@ -23,6 +25,7 @@ import {
   writeActiveClaudeKeychainCredentials,
   writeManagedClaudeKeychainCredentials
 } from '../claude-accounts/keychain'
+import { readSnapshotFileThroughFilesystemHost } from '../filesystem-host/filesystem-host-read-authority'
 import {
   readClaudeManagedAuthFile,
   resolveOwnedClaudeManagedAuthPath,
@@ -73,12 +76,7 @@ type KeychainCredentials = {
   }
 }
 
-type OAuthCredentialReadResult = {
-  token: string | null
-  hasRefreshableCredentials: boolean
-  source: OAuthCredentialSource
-  keychainUnavailable?: boolean
-}
+type OAuthCredentialReadResult = ClaudeOAuthCredentialSnapshot
 
 type OAuthCredentialReadOptions = {
   credentialsFileConfigDir?: string
@@ -193,7 +191,9 @@ async function readCredentialsFromStrictKeychain(
 async function readFromCredentialsFile(configDir?: string): Promise<OAuthCredentialReadResult> {
   const credPath = path.join(configDir ?? path.join(homedir(), '.claude'), '.credentials.json')
   try {
-    const raw = await readFile(credPath, 'utf-8')
+    const raw = (
+      await readSnapshotFileThroughFilesystemHost(credPath, 'claude-credentials')
+    ).toString('utf8')
     return parseOAuthCredentialsJson(raw, 'credentials-file')
   } catch {
     return emptyOAuthCredentialReadResult()
@@ -230,6 +230,18 @@ async function readOAuthCredentials(
   }
 
   return emptyOAuthCredentialReadResult()
+}
+
+export async function hydrateClaudeOAuthCredentialSnapshot(
+  authPreparation?: ClaudeRuntimeAuthPreparation
+): Promise<ClaudeOAuthCredentialSnapshot> {
+  return readOAuthCredentials(resolveOAuthCredentialReadOptions(authPreparation))
+}
+
+export async function hydrateClaudeLegacyOAuthCredentialSnapshot(): Promise<ClaudeOAuthCredentialSnapshot> {
+  return process.platform === 'darwin'
+    ? readCredentialsFromStrictKeychain(undefined, 'legacy-keychain')
+    : emptyOAuthCredentialReadResult()
 }
 
 function resolveOAuthCredentialReadOptions(
@@ -598,7 +610,8 @@ async function retryOAuthWithLegacyKeychainToken(input: {
   attempts: ClaudeUsageAttemptState
   options?: FetchClaudeRateLimitsOptions
 }): Promise<ProviderRateLimits | null> {
-  const legacyCredentials = await readCredentialsFromStrictKeychain(undefined, 'legacy-keychain')
+  const legacyCredentials =
+    input.options?.authPreparation?.legacyOAuthCredentials ?? emptyOAuthCredentialReadResult()
   if (!legacyCredentials.token || legacyCredentials.token === input.failedToken) {
     return null
   }
@@ -693,39 +706,9 @@ async function attemptCliRepairThenRetryOAuth(input: {
     warnClaudeUsageFetchFailure(input.options?.authPreparation, input.oauthCredentials, err)
   }
 
-  // Why: bail before credential I/O if the fetch cycle was stopped mid-CLI-repair.
   if (input.options?.signal?.aborted) {
     return abortedClaudeRateLimitResult()
   }
-
-  const refreshedCredentials = await readOAuthCredentials(
-    resolveOAuthCredentialReadOptions(input.options?.authPreparation)
-  )
-  if (input.options?.signal?.aborted) {
-    return abortedClaudeRateLimitResult()
-  }
-  if (refreshedCredentials.token) {
-    recordAttempt(input.attempts, 'oauth')
-    try {
-      const oauthRetry = await fetchViaOAuth(refreshedCredentials.token, input.options?.signal)
-      if (input.options?.signal?.aborted) {
-        return abortedClaudeRateLimitResult()
-      }
-      const supplemented = mergeClaudeUsageWindows(oauthRetry, cliResult)
-      return withClaudeUsageMetadata(
-        supplemented,
-        metadataForAttempt({
-          attemptedSources: input.attempts.attemptedSources,
-          oauthCredentials: refreshedCredentials,
-          authPreparation: input.options?.authPreparation,
-          source: 'oauth'
-        })
-      )
-    } catch (err) {
-      warnClaudeUsageFetchFailure(input.options?.authPreparation, refreshedCredentials, err)
-    }
-  }
-
   return cliResult
 }
 
@@ -772,9 +755,8 @@ export async function fetchClaudeRateLimits(
     )
   }
 
-  const oauthCredentials = await readOAuthCredentials(
-    resolveOAuthCredentialReadOptions(options?.authPreparation)
-  )
+  const oauthCredentials =
+    options?.authPreparation?.oauthCredentials ?? emptyOAuthCredentialReadResult()
   if (options?.signal?.aborted) {
     return abortedClaudeRateLimitResult()
   }

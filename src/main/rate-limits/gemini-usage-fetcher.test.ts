@@ -28,7 +28,7 @@ vi.mock('node:fs/promises', () => ({
 }))
 vi.mock('electron', () => ({ net: { fetch: netFetchMock } }))
 
-import { fetchGeminiRateLimits } from './gemini-usage-fetcher'
+import { fetchGeminiRateLimitsWithHydration as fetchGeminiRateLimits } from './gemini-usage-fetcher'
 
 describe('fetchGeminiRateLimits', () => {
   beforeEach(() => {

@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fetchClaudeRateLimits, fetchManagedAccountUsage } from './claude-fetcher'
+import {
+  fetchClaudeRateLimits as fetchClaudeRateLimitsImpl,
+  fetchManagedAccountUsage,
+  hydrateClaudeLegacyOAuthCredentialSnapshot,
+  hydrateClaudeOAuthCredentialSnapshot,
+  type FetchClaudeRateLimitsOptions
+} from './claude-fetcher'
 import { fetchViaPty } from './claude-pty'
 import {
   deleteActiveClaudeKeychainCredentialsStrict,
@@ -64,6 +70,34 @@ function setPlatform(platform: NodeJS.Platform): void {
     configurable: true,
     value: platform
   })
+}
+
+async function fetchClaudeRateLimits(
+  options: FetchClaudeRateLimitsOptions = {}
+): ReturnType<typeof fetchClaudeRateLimitsImpl> {
+  const preparation = options.authPreparation ?? {
+    configDir: '',
+    runtime: 'host' as const,
+    envPatch: {},
+    stripAuthEnv: false,
+    provenance: 'system'
+  }
+  if (preparation.runtime === 'wsl' && !preparation.wslLinuxConfigDir) {
+    return fetchClaudeRateLimitsImpl(options)
+  }
+  const shouldHydrateLegacy =
+    (preparation.runtime ?? 'host') === 'host' && !preparation.provenance.startsWith('managed:')
+  const authPreparation: ClaudeRuntimeAuthPreparation = {
+    ...preparation,
+    oauthCredentials:
+      preparation.oauthCredentials ?? (await hydrateClaudeOAuthCredentialSnapshot(preparation)),
+    legacyOAuthCredentials:
+      preparation.legacyOAuthCredentials ??
+      (shouldHydrateLegacy
+        ? await hydrateClaudeLegacyOAuthCredentialSnapshot()
+        : { token: null, hasRefreshableCredentials: false, source: 'none' })
+  }
+  return fetchClaudeRateLimitsImpl({ ...options, authPreparation })
 }
 
 describe('fetchClaudeRateLimits', () => {
@@ -549,7 +583,9 @@ describe('fetchClaudeRateLimits', () => {
         attemptedSources: ['oauth', 'cli']
       }
     })
-    expect(fetchViaPty).toHaveBeenCalledWith({ authPreparation })
+    expect(fetchViaPty).toHaveBeenCalledWith(
+      expect.objectContaining({ authPreparation: expect.objectContaining(authPreparation) })
+    )
   })
 
   it('supplements system OAuth usage when the service explicitly allows usage-panel reads', async () => {
@@ -600,7 +636,9 @@ describe('fetchClaudeRateLimits', () => {
         attemptedSources: ['oauth', 'cli']
       }
     })
-    expect(fetchViaPty).toHaveBeenCalledWith({ authPreparation })
+    expect(fetchViaPty).toHaveBeenCalledWith(
+      expect.objectContaining({ authPreparation: expect.objectContaining(authPreparation) })
+    )
   })
 
   it('ignores bare Fable OAuth usage because the window length is ambiguous', async () => {
@@ -744,10 +782,7 @@ describe('fetchClaudeRateLimits', () => {
       status: 'ok'
     })
 
-    expect(readFileMock).toHaveBeenCalledWith(
-      join('/Users/test/.claude', '.credentials.json'),
-      'utf-8'
-    )
+    expect(readFileMock).toHaveBeenCalledWith(join('/Users/test/.claude', '.credentials.json'))
     expect(netFetchMock).toHaveBeenCalledWith(
       'https://api.anthropic.com/api/oauth/usage',
       expect.objectContaining({
@@ -956,10 +991,12 @@ describe('fetchClaudeRateLimits', () => {
       }
     })
 
-    expect(fetchViaPty).toHaveBeenCalledWith({ authPreparation })
+    expect(fetchViaPty).toHaveBeenCalledWith(
+      expect.objectContaining({ authPreparation: expect.objectContaining(authPreparation) })
+    )
   })
 
-  it('re-reads credentials and retries OAuth once after CLI repair', async () => {
+  it('does not re-read credentials after CLI repair during polling', async () => {
     const configDir = '/Users/test/.claude'
     const authPreparation: ClaudeRuntimeAuthPreparation = {
       configDir,
@@ -980,59 +1017,34 @@ describe('fetchClaudeRateLimits', () => {
       // Legacy item absent — the stale-scoped legacy fallback must not preempt
       // CLI repair in this scenario.
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(
+    netFetchMock.mockResolvedValueOnce(
+      new Response(
         JSON.stringify({
-          claudeAiOauth: {
-            accessToken: 'repaired-oauth-token',
-            refreshToken: 'refresh-token-2',
-            expiresAt: Date.now() + 60_000
+          error: {
+            type: 'authentication_error',
+            message: 'Invalid OAuth token.'
           }
-        })
+        }),
+        { status: 401 }
       )
-    netFetchMock
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            error: {
-              type: 'authentication_error',
-              message: 'Invalid OAuth token.'
-            }
-          }),
-          { status: 401 }
-        )
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            five_hour: { utilization: 14 },
-            seven_day: { utilization: 27 }
-          }),
-          { status: 200 }
-        )
-      )
+    )
 
     await expect(fetchClaudeRateLimits({ authPreparation })).resolves.toMatchObject({
       provider: 'claude',
       status: 'ok',
-      session: { usedPercent: 14 },
-      weekly: { usedPercent: 27 },
+      session: { usedPercent: 56 },
       usageMetadata: {
-        source: 'oauth',
+        source: 'cli',
         attemptedSources: ['oauth', 'cli'],
         credentialSource: 'scoped-keychain'
       }
     })
 
-    expect(fetchViaPty).toHaveBeenCalledWith({ authPreparation })
-    expect(netFetchMock).toHaveBeenNthCalledWith(
-      2,
-      'https://api.anthropic.com/api/oauth/usage',
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'Bearer repaired-oauth-token'
-        })
-      })
+    expect(fetchViaPty).toHaveBeenCalledWith(
+      expect.objectContaining({ authPreparation: expect.objectContaining(authPreparation) })
     )
+    expect(netFetchMock).toHaveBeenCalledTimes(1)
+    expect(readActiveClaudeKeychainCredentialsStrict).toHaveBeenCalledTimes(2)
   })
 
   it('explains auth failures when a live Claude terminal owns managed refresh', async () => {
@@ -1179,7 +1191,9 @@ describe('fetchClaudeRateLimits', () => {
       }
     })
 
-    expect(fetchViaPty).toHaveBeenCalledWith({ authPreparation })
+    expect(fetchViaPty).toHaveBeenCalledWith(
+      expect.objectContaining({ authPreparation: expect.objectContaining(authPreparation) })
+    )
   })
 
   it('marks CLI plan usage shell results as usage unavailable', async () => {
@@ -1251,7 +1265,9 @@ describe('fetchClaudeRateLimits', () => {
       }
     })
 
-    expect(fetchViaPty).toHaveBeenCalledWith({ authPreparation })
+    expect(fetchViaPty).toHaveBeenCalledWith(
+      expect.objectContaining({ authPreparation: expect.objectContaining(authPreparation) })
+    )
   })
 
   it('does not read inactive managed credentials from unowned auth paths', async () => {

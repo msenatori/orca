@@ -19,11 +19,11 @@ export function registerKeybindingHandlers(
 ): void {
   ipcMain.handle('keybindings:get', () => service.getSnapshot())
 
-  ipcMain.handle('keybindings:ensureFile', () => {
-    const snapshot = service.ensureFile()
+  ipcMain.handle('keybindings:ensureFile', async () => {
+    const snapshot = await service.ensureFile()
     // Why: keybindings.json lives in Orca's app config directory, not inside a
     // workspace. Opening it in the editor still needs normal fs IPC access.
-    authorizeExternalPath(snapshot.path)
+    await authorizeExternalPath(snapshot.path)
     broadcastKeybindingsChanged(snapshot)
     onChanged?.()
     return snapshot
@@ -39,16 +39,16 @@ export function registerKeybindingHandlers(
     }
   )
 
-  ipcMain.handle('keybindings:reload', () => {
-    const snapshot = service.reload()
+  ipcMain.handle('keybindings:reload', async () => {
+    const snapshot = await service.reload()
     broadcastKeybindingsChanged(snapshot)
     onChanged?.()
     return snapshot
   })
 
   ipcMain.handle('keybindings:openFile', async () => {
-    const snapshot = service.ensureFile()
-    authorizeExternalPath(snapshot.path)
+    const snapshot = await service.ensureFile()
+    await authorizeExternalPath(snapshot.path)
     const error = await shell.openPath(snapshot.path)
     if (error) {
       throw new Error(error)
@@ -56,9 +56,9 @@ export function registerKeybindingHandlers(
     return snapshot
   })
 
-  ipcMain.handle('keybindings:revealFile', () => {
-    const snapshot = service.ensureFile()
-    authorizeExternalPath(snapshot.path)
+  ipcMain.handle('keybindings:revealFile', async () => {
+    const snapshot = await service.ensureFile()
+    await authorizeExternalPath(snapshot.path)
     shell.showItemInFolder(snapshot.path)
     return snapshot
   })

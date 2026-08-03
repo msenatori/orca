@@ -3490,11 +3490,11 @@ describe('CodexAccountService config sync', () => {
       return new CodexAccountService(store as never, rateLimits as never, runtimeHome as never)
     }
 
-    function withoutEnvApiKey<T>(run: () => T): T {
+    async function withoutEnvApiKey<T>(run: () => T | Promise<T>): Promise<T> {
       const previous = process.env.OPENAI_API_KEY
       delete process.env.OPENAI_API_KEY
       try {
-        return run()
+        return await run()
       } finally {
         if (previous === undefined) {
           delete process.env.OPENAI_API_KEY
@@ -3512,7 +3512,10 @@ describe('CodexAccountService config sync', () => {
       )
       const service = await newService()
 
-      const state = withoutEnvApiKey(() => service.listAccounts())
+      const state = await withoutEnvApiKey(async () => {
+        await service.hydrateSystemDefaultIdentity()
+        return service.listAccounts()
+      })
 
       expect(state.activeAccountId).toBeNull()
       expect(state.systemDefault).toEqual({
@@ -3528,7 +3531,10 @@ describe('CodexAccountService config sync', () => {
       writeFileSync(systemAuthPath(), JSON.stringify({ OPENAI_API_KEY: 'sk-live-test' }), 'utf-8')
       const service = await newService()
 
-      const state = withoutEnvApiKey(() => service.listAccounts())
+      const state = await withoutEnvApiKey(async () => {
+        await service.hydrateSystemDefaultIdentity()
+        return service.listAccounts()
+      })
 
       expect(state.systemDefault).toEqual({
         hasAuth: true,
@@ -3542,7 +3548,10 @@ describe('CodexAccountService config sync', () => {
     it('reports signed-out when no auth.json and no env key is present', async () => {
       const service = await newService()
 
-      const state = withoutEnvApiKey(() => service.listAccounts())
+      const state = await withoutEnvApiKey(async () => {
+        await service.hydrateSystemDefaultIdentity()
+        return service.listAccounts()
+      })
 
       expect(state.systemDefault).toEqual({
         hasAuth: false,
@@ -3559,7 +3568,10 @@ describe('CodexAccountService config sync', () => {
       const service = await newService()
 
       try {
-        const state = withoutEnvApiKey(() => service.listAccounts())
+        const state = await withoutEnvApiKey(async () => {
+          await service.hydrateSystemDefaultIdentity()
+          return service.listAccounts()
+        })
 
         expect(state.systemDefault).toEqual({
           hasAuth: true,
@@ -3609,7 +3621,10 @@ describe('CodexAccountService config sync', () => {
       const service = await newService()
 
       try {
-        const state = withoutEnvApiKey(() => service.listAccounts())
+        const state = await withoutEnvApiKey(async () => {
+          await service.hydrateSystemDefaultIdentity()
+          return service.listAccounts()
+        })
 
         expect(state.systemDefault?.authKind).toBe('none')
         expect(warn).toHaveBeenCalledWith(
@@ -3626,6 +3641,7 @@ describe('CodexAccountService config sync', () => {
       const previous = process.env.OPENAI_API_KEY
       process.env.OPENAI_API_KEY = 'sk-env-test'
       try {
+        await service.hydrateSystemDefaultIdentity()
         const state = service.listAccounts()
         expect(state.systemDefault).toEqual({
           hasAuth: false,
@@ -3682,7 +3698,10 @@ describe('CodexAccountService config sync', () => {
       await service.selectAccount(null)
 
       expect(readFileSync(systemAuthPath(), 'utf-8')).toBe(systemAuth)
-      const state = withoutEnvApiKey(() => service.listAccounts())
+      const state = await withoutEnvApiKey(async () => {
+        await service.hydrateSystemDefaultIdentity()
+        return service.listAccounts()
+      })
       expect(state.systemDefault?.email).toBe('real@home.dev')
     })
   })

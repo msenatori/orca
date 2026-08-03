@@ -8,10 +8,11 @@ import {
   ensureKeybindingFile,
   getUserKeybindingsPath,
   migrateLegacyKeybindings,
-  readKeybindingFile,
+  parseKeybindingFileContents,
   seedLegacyTabSwitchBindings,
   writeKeybindingOverride
 } from './keybinding-file'
+import { readKeybindingsThroughFilesystemHost } from '../filesystem-host/filesystem-host-read-authority'
 
 export type KeybindingServiceOptions = {
   homePath: string
@@ -26,14 +27,17 @@ export type KeybindingServiceOptions = {
   }
 }
 
+const FILESYSTEM_HOST_DIAGNOSTIC_SECTION = 'filesystem-host'
+
 export class KeybindingService {
   private readonly configPath: string
   private readonly platform: NodeJS.Platform
-  private snapshot: KeybindingFileSnapshot | null = null
+  private snapshot: KeybindingFileSnapshot
 
   constructor(options: KeybindingServiceOptions) {
     this.configPath = getUserKeybindingsPath(options.homePath)
     this.platform = options.platform ?? process.platform
+    this.snapshot = parseKeybindingFileContents(this.configPath, null, this.platform)
     // Why: older builds persisted custom shortcuts inside global settings.
     // Once a keybindings file exists, it is the sole source of truth.
     migrateLegacyKeybindings(this.configPath, this.platform, options.getLegacyOverrides?.())
@@ -61,24 +65,50 @@ export class KeybindingService {
   }
 
   getSnapshot(): KeybindingFileSnapshot {
-    if (!this.snapshot) {
-      this.snapshot = readKeybindingFile(this.configPath, this.platform)
-    }
     return this.snapshot
   }
 
-  reload(): KeybindingFileSnapshot {
-    this.snapshot = readKeybindingFile(this.configPath, this.platform)
+  async hydrate(): Promise<KeybindingFileSnapshot> {
+    let contents: string | null
+    try {
+      contents = await readKeybindingsThroughFilesystemHost(this.configPath)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | null)?.code
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        contents = null
+      } else {
+        this.snapshot = {
+          ...this.snapshot,
+          diagnostics: [
+            ...this.snapshot.diagnostics.filter(
+              (diagnostic) => diagnostic.section !== FILESYSTEM_HOST_DIAGNOSTIC_SECTION
+            ),
+            {
+              severity: 'warning',
+              section: FILESYSTEM_HOST_DIAGNOSTIC_SECTION,
+              message:
+                'Keybindings could not be refreshed; Orca is using the last available shortcuts.'
+            }
+          ]
+        }
+        return this.snapshot
+      }
+    }
+    this.snapshot = parseKeybindingFileContents(this.configPath, contents, this.platform)
     return this.snapshot
+  }
+
+  reload(): Promise<KeybindingFileSnapshot> {
+    return this.hydrate()
   }
 
   getOverrides(): KeybindingOverrides {
     return this.getSnapshot().overrides
   }
 
-  ensureFile(): KeybindingFileSnapshot {
+  async ensureFile(): Promise<KeybindingFileSnapshot> {
     ensureKeybindingFile(this.configPath)
-    return this.reload()
+    return await this.reload()
   }
 
   setActionBindings(

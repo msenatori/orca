@@ -1,7 +1,8 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getEffectiveKeybindingsForAction,
   keybindingMatchesAction,
@@ -11,6 +12,7 @@ import {
 } from '../../shared/keybindings'
 import { getUserKeybindingsPath, writeKeybindingOverride } from './keybinding-file'
 import { KeybindingService } from './keybinding-service'
+import { setFilesystemHostReadClientForTests } from '../filesystem-host/filesystem-host-read-authority'
 
 // End-to-end coverage of the tab-switch convention swap: constructs a real
 // KeybindingService (which runs the seed) and asserts the effective bindings AND
@@ -63,9 +65,19 @@ describe('KeybindingService tab-switch cohort seeding', () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'orca-kb-service-'))
+    setFilesystemHostReadClientForTests({
+      canonicalizePath: async (path) => path,
+      readOrcaYaml: async () => {
+        throw new Error('unused')
+      },
+      readKeybindings: (path) => readFile(path, 'utf8'),
+      readSnapshotFile: async () => Buffer.from(''),
+      prepareRateLimitPtyCwd: async (path) => path
+    })
   })
 
   afterEach(() => {
+    setFilesystemHostReadClientForTests(null)
     rmSync(home, { recursive: true, force: true })
   })
 
@@ -110,6 +122,59 @@ describe('KeybindingService tab-switch cohort seeding', () => {
       ).toBe(false)
     }
   )
+
+  it('keeps menu reads memory-only and hydrates explicitly through the host', async () => {
+    const readKeybindings = vi.fn(async () =>
+      JSON.stringify({ version: 1, keybindings: { 'tab.nextAllTypes': ['Mod+K'] } })
+    )
+    setFilesystemHostReadClientForTests({
+      canonicalizePath: async (path) => path,
+      readOrcaYaml: async () => {
+        throw new Error('unused')
+      },
+      readKeybindings,
+      readSnapshotFile: async () => Buffer.from(''),
+      prepareRateLimitPtyCwd: async (path) => path
+    })
+    const service = new KeybindingService({ homePath: home, platform: 'linux' })
+
+    expect(service.getOverrides()).toEqual({})
+    expect(readKeybindings).not.toHaveBeenCalled()
+    await service.hydrate()
+    expect(service.getOverrides()).toEqual({ 'tab.nextAllTypes': ['Mod+K'] })
+    expect(readKeybindings).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the last-known shortcuts when host hydration is unavailable', async () => {
+    writeKeybindingOverride(getUserKeybindingsPath(home), 'linux', 'tab.nextAllTypes', ['Mod+K'])
+    const service = new KeybindingService({ homePath: home, platform: 'linux' })
+    await service.hydrate()
+    const hydrated = service.getSnapshot()
+    expect(hydrated.overrides).toEqual({ 'tab.nextAllTypes': ['Mod+K'] })
+    setFilesystemHostReadClientForTests({
+      canonicalizePath: async (path) => path,
+      readOrcaYaml: async () => {
+        throw new Error('unused')
+      },
+      readKeybindings: async () => {
+        throw Object.assign(new Error('host unavailable'), { code: 'EHOSTUNREACH' })
+      },
+      readSnapshotFile: async () => Buffer.from(''),
+      prepareRateLimitPtyCwd: async (path) => path
+    })
+
+    await expect(service.reload()).resolves.toMatchObject({
+      overrides: hydrated.overrides,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          severity: 'warning',
+          section: 'filesystem-host',
+          message: expect.stringContaining('last available shortcuts')
+        })
+      ])
+    })
+    expect(service.getOverrides()).toEqual(hydrated.overrides)
+  })
 
   it.each(PLATFORMS)(
     'existing install (%s) keeps the pre-swap chords exactly, on a clean profile',
@@ -181,7 +246,7 @@ describe('KeybindingService tab-switch cohort seeding', () => {
     ])
   })
 
-  it('is idempotent: a second launch after the seed changes nothing', () => {
+  it('is idempotent: a second launch after the seed changes nothing', async () => {
     const platform: NodeJS.Platform = 'linux'
     const cohort = makeCohort(true)
     const first = new KeybindingService({
@@ -198,6 +263,7 @@ describe('KeybindingService tab-switch cohort seeding', () => {
       platform,
       legacyTabSwitchSeed: cohort.controller
     })
+    await second.hydrate()
     expect(second.getOverrides()).toEqual(afterFirst)
     for (const actionId of SWAPPED_ACTIONS) {
       expect(getEffectiveKeybindingsForAction(actionId, platform, second.getOverrides())).toEqual(
