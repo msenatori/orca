@@ -286,6 +286,8 @@ function isDashboardCard(value: unknown): boolean {
     typeof card.unseen === 'boolean' &&
     isOptionalBoundedString(card.askSummary, AGENT_STATUS_INTERACTIVE_PROMPT_MAX_LENGTH) &&
     isOptionalBoundedString(card.conversationName, MAX_LABEL_LENGTH) &&
+    isOptionalBoundedString(card.sessionId, MAX_ID_LENGTH) &&
+    isOptionalBoundedString(card.transcriptPath, MAX_ID_LENGTH) &&
     isDashboardTerminalInput(card.terminalInput)
   )
 }

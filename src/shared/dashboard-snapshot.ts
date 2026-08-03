@@ -65,7 +65,7 @@ export type DashboardCard = {
   parentPaneKey?: string
   repoName: string
   worktreeName: string
-  /** Optional for preload compatibility with snapshots produced before Agent Map. */
+  /** Execution host classification used to avoid reading remote transcript paths locally. */
   hostKind?: DashboardCardHostKind
   /** Folder workspaces share the ring hierarchy without pretending to be git worktrees. */
   workspaceKind?: DashboardCardWorkspaceKind
@@ -99,6 +99,10 @@ export type DashboardCard = {
    *  the main renderer owns the store these derive from, so they ride the
    *  snapshot to reach the pop-out. */
   terminalInput?: DashboardCardTerminalInput
+  /** Provider session identity used by the native dashboard chat. */
+  sessionId?: string
+  /** Authoritative on-disk transcript path for the provider session. */
+  transcriptPath?: string
 }
 
 /**

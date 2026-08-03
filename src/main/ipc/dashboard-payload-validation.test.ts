@@ -125,6 +125,37 @@ describe('dashboard payload validation', () => {
     ).toBe(false)
   })
 
+  it('validates optional native-chat session identity', () => {
+    const withSession = {
+      ...SNAPSHOT,
+      cards: [
+        {
+          ...SNAPSHOT.cards[0],
+          hostKind: 'local',
+          sessionId: 'b6e5f0aa-1f1e-4f6c-9f4d-2f3a5c7d9e11',
+          transcriptPath: '/Users/dev/.claude/projects/orca/session.jsonl'
+        }
+      ]
+    }
+    expect(isDashboardSnapshot(withSession)).toBe(true)
+    expect(admitDashboardSnapshot(withSession)?.droppedCardCount).toBe(0)
+    expect(
+      isDashboardSnapshot({
+        ...SNAPSHOT,
+        cards: [{ ...SNAPSHOT.cards[0], hostKind: 'satellite' }]
+      })
+    ).toBe(false)
+    expect(
+      isDashboardSnapshot({ ...SNAPSHOT, cards: [{ ...SNAPSHOT.cards[0], sessionId: 42 }] })
+    ).toBe(false)
+    expect(
+      isDashboardSnapshot({
+        ...SNAPSHOT,
+        cards: [{ ...SNAPSHOT.cards[0], transcriptPath: { path: '/tmp/x' } }]
+      })
+    ).toBe(false)
+  })
+
   it('accepts repo icons a pop-out can safely render, and rejects the rest', () => {
     expect(
       isDashboardSnapshot({

@@ -143,6 +143,7 @@ describe('buildDashboardSnapshot', () => {
     expect(card.worktreeName).toBe('wt-one')
     expect(card.repoName).toBe('Repo One')
     expect(card.leafId).toBe(LEAF_ID)
+    expect(card.hostKind).toBe('local')
     expect(card.lastUserMessage).toBe('do the thing')
     expect(card.lastAgentMessage).toBe('Working on it now')
     // Column ordering key: when the agent entered its current state.
@@ -267,6 +268,66 @@ describe('buildDashboardSnapshot', () => {
     )
 
     expect(snapshot.cards[0].parentPaneKey).toBeUndefined()
+  })
+
+  it('carries provider session identity for the native chat transcript', () => {
+    const withSession = buildDashboardSnapshot(
+      baseState({
+        agentStatusByPaneKey: {
+          [PANE_KEY]: entry({
+            providerSession: {
+              key: 'session_id',
+              id: 'session-abc',
+              transcriptPath: '/home/dev/.claude/projects/orca/session-abc.jsonl'
+            }
+          })
+        }
+      } as unknown as Partial<DashboardSnapshotState>),
+      NOW
+    )
+    expect(withSession.cards[0].sessionId).toBe('session-abc')
+    expect(withSession.cards[0].transcriptPath).toBe(
+      '/home/dev/.claude/projects/orca/session-abc.jsonl'
+    )
+
+    const idOnly = buildDashboardSnapshot(
+      baseState({
+        agentStatusByPaneKey: {
+          [PANE_KEY]: entry({ providerSession: { key: 'session_id', id: 'session-def' } })
+        }
+      } as unknown as Partial<DashboardSnapshotState>),
+      NOW
+    )
+    expect(idOnly.cards[0].sessionId).toBe('session-def')
+    expect(idOnly.cards[0].transcriptPath).toBeUndefined()
+
+    const none = buildDashboardSnapshot(
+      baseState({ agentStatusByPaneKey: { [PANE_KEY]: entry({}) } }),
+      NOW
+    )
+    expect(none.cards[0].sessionId).toBeUndefined()
+    expect(none.cards[0].transcriptPath).toBeUndefined()
+  })
+
+  it('marks SSH transcript paths as remote from the dashboard renderer', () => {
+    const snapshot = buildDashboardSnapshot(
+      baseState({
+        repos: [
+          {
+            id: 'r1',
+            path: '/r1',
+            displayName: 'Repo One',
+            badgeColor: '#000',
+            addedAt: 0,
+            connectionId: 'staging'
+          }
+        ],
+        agentStatusByPaneKey: { [PANE_KEY]: entry({}) }
+      }),
+      NOW
+    )
+
+    expect(snapshot.cards[0].hostKind).toBe('ssh')
   })
 
   it('carries the tab conversation name and drops status-only titles', () => {
