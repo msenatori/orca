@@ -207,6 +207,12 @@ describe('electron-builder config', () => {
     )
   })
 
+  it('unpacks the plain-Node filesystem host entry', () => {
+    expect(electronBuilderConfig.asarUnpack).toEqual(
+      expect.arrayContaining(['out/main/filesystem-host-entry.js'])
+    )
+  })
+
   it('keeps the worker-thread hang watchdog inside app.asar', () => {
     expect(electronBuilderConfig.asarUnpack).not.toContain(
       'out/main/main-thread-hang-watchdog-entry.js'
@@ -634,6 +640,11 @@ describe('electron-builder config', () => {
         await writeFile(
           join(unpackedMainDir, 'daemon-entry.js'),
           'console.error("Usage: daemon-entry <socket>"); process.exit(1)\n',
+          'utf8'
+        )
+        await writeFile(
+          join(unpackedMainDir, 'filesystem-host-entry.js'),
+          'console.log(JSON.stringify({ protocolVersion: 1 }))\n',
           'utf8'
         )
         const unpackedCliDir = join(resourcesDir, 'app.asar.unpacked', 'out', 'cli')
